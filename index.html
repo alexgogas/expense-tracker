@@ -83,6 +83,9 @@
   .stat .value { font-size: 22px; font-weight: 600; margin-top: 4px; }
 
   #chart-wrap { position: relative; height: 340px; margin-top: 16px; }
+  #breadcrumb-row { display: flex; align-items: center; gap: 10px; margin-top: 10px; font-size: 13px; color: var(--text-dim); }
+  #breadcrumb-row button { padding: 4px 10px; font-size: 12px; }
+  #breadcrumb-label { color: var(--accent); }
 
   .drop-zone {
     border: 2px dashed var(--border);
@@ -168,7 +171,25 @@
       <h2>Overview</h2>
       <div id="status-line"></div>
       <div class="stat-row" id="stat-row"></div>
+      <div id="breadcrumb-row" class="hidden">
+        <button id="breadcrumb-back">&larr; Back</button>
+        <span id="breadcrumb-label"></span>
+      </div>
       <div id="chart-wrap"><canvas id="spend-chart"></canvas></div>
+    </div>
+
+    <div class="card">
+      <h2>Savings</h2>
+      <div id="savings-chart-wrap" style="position:relative; height:300px;"><canvas id="savings-chart"></canvas></div>
+    </div>
+
+    <div class="card">
+      <h2>Transactions</h2>
+      <div class="format-row">
+        <select id="txn-month-filter" class="cat-select"><option value="">All months</option></select>
+        <select id="txn-category-filter" class="cat-select"><option value="">All categories</option></select>
+      </div>
+      <div id="txn-table-wrap"></div>
     </div>
 
     <div class="card">
@@ -196,8 +217,7 @@
 // Add this page's URL as an Authorized JavaScript origin
 // ============================================================
 const CLIENT_ID = '312075890401-qh3mmofr68m9baujmbiv2uqu9ft8n8af.apps.googleusercontent.com';
-const API_KEY = 'AIzaSyC6c4cHh7sdor57Eqn22bmMy2_6RVyWTvs'; // Create in Cloud Console > Credentials > Create Credentials > API Key
-                                       // Restrict it to the Google Picker API + your GitHub Pages origin
+const API_KEY = 'AIzaSyC6c4cHh7sdor57Eqn22bmMy2_6RVyWTvs'; // Restricted to Google Picker API + your GitHub Pages origin
 const DRIVE_FOLDER_NAME = 'Expense Tracker App'; // shown as a hint in the picker dialog title only
 const SCOPES = 'https://www.googleapis.com/auth/drive.file';
 const FOLDER_STORAGE_KEY = 'expense_tracker_folder_id';
@@ -442,16 +462,27 @@ async function loadAllData() {
 }
 
 // ============================================================
-// OVERVIEW / DASHBOARD
+// OVERVIEW / DASHBOARD (with drill-down)
 // ============================================================
-function renderOverview() {
-  const total = dataset.reduce((s, i) => s + i.amount, 0);
+let drillState = { level: 'top', category: null }; // level: 'top' | 'sub' | 'merchant'
+let savingsChartInstance = null;
+
+function sortedMonthList() {
   const months = [...new Set(dataset.map(i => i.month))];
-  const byCategory = {};
-  dataset.forEach(i => {
-    const top = i.category.split(' > ')[0];
-    byCategory[top] = (byCategory[top] || 0) + i.amount;
-  });
+  const monthOrder = {};
+  dataset.forEach(i => { if (!(i.month in monthOrder)) monthOrder[i.month] = i.txn_date; });
+  return months.sort((a, b) => monthOrder[a].localeCompare(monthOrder[b]));
+}
+
+function categoryHasSubs(topCategory) {
+  const entry = (typeof CATEGORY_TREE !== 'undefined') ? CATEGORY_TREE.find(c => c.key === topCategory) : null;
+  return entry && entry.subs;
+}
+
+function renderOverview() {
+  drillState = { level: 'top', category: null };
+  const total = dataset.reduce((s, i) => s + i.amount, 0);
+  const months = sortedMonthList();
 
   const statRow = document.getElementById('stat-row');
   statRow.innerHTML = '';
@@ -467,34 +498,72 @@ function renderOverview() {
     statRow.appendChild(el);
   });
 
-  // sort months chronologically using txn_date order
-  const monthOrder = {};
-  dataset.forEach(i => { if (!(i.month in monthOrder)) monthOrder[i.month] = i.txn_date; });
-  const sortedMonths = months.sort((a, b) => monthOrder[a].localeCompare(monthOrder[b]));
+  renderSpendChart();
+  renderSavingsChart();
+  renderTransactionsBrowser();
+}
 
-  const categories = Object.keys(byCategory).filter(c => c !== 'Excluded');
-  const datasets = categories.map((cat, idx) => {
-    const data = sortedMonths.map(m => {
-      return dataset
-        .filter(i => i.month === m && i.category.split(' > ')[0] === cat)
-        .reduce((s, i) => s + i.amount, 0);
+function renderSpendChart() {
+  document.getElementById('breadcrumb-back').onclick = drillBack;
+  const months = sortedMonthList();
+  let datasets, breadcrumbVisible = false, breadcrumbText = '';
+
+  if (drillState.level === 'top') {
+    const byCategory = {};
+    dataset.forEach(i => {
+      const top = i.category.split(' > ')[0];
+      if (top === 'Excluded') return;
+      byCategory[top] = true;
     });
-    return {
+    const categories = Object.keys(byCategory);
+    datasets = categories.map((cat, idx) => ({
       label: cat,
-      data,
+      data: months.map(m => dataset.filter(i => i.month === m && i.category.split(' > ')[0] === cat).reduce((s, i) => s + i.amount, 0)),
+      backgroundColor: colorForIndex(idx),
+      stack: 'spend',
+      _category: cat
+    }));
+  } else if (drillState.level === 'sub') {
+    const cat = drillState.category;
+    const entry = CATEGORY_TREE.find(c => c.key === cat);
+    const subs = entry.subs;
+    datasets = subs.map((sub, idx) => ({
+      label: sub,
+      data: months.map(m => dataset.filter(i => i.month === m && i.category === cat + ' > ' + sub).reduce((s, i) => s + i.amount, 0)),
       backgroundColor: colorForIndex(idx),
       stack: 'spend'
-    };
-  });
+    }));
+    breadcrumbVisible = true;
+    breadcrumbText = 'Showing subcategories of ' + cat;
+  } else if (drillState.level === 'merchant') {
+    const cat = drillState.category;
+    const merchantTotals = {};
+    dataset.filter(i => i.category.split(' > ')[0] === cat).forEach(i => {
+      merchantTotals[i.merchant] = (merchantTotals[i.merchant] || 0) + i.amount;
+    });
+    const topMerchants = Object.entries(merchantTotals).sort((a, b) => b[1] - a[1]).slice(0, 8).map(e => e[0]);
+    datasets = topMerchants.map((merch, idx) => ({
+      label: merch,
+      data: months.map(m => dataset.filter(i => i.month === m && i.merchant === merch && i.category.split(' > ')[0] === cat).reduce((s, i) => s + i.amount, 0)),
+      backgroundColor: colorForIndex(idx),
+      stack: 'spend'
+    }));
+    breadcrumbVisible = true;
+    breadcrumbText = 'Showing top merchants of ' + cat;
+  }
+
+  document.getElementById('breadcrumb-row').classList.toggle('hidden', !breadcrumbVisible);
+  document.getElementById('breadcrumb-label').textContent = breadcrumbText;
 
   const ctx = document.getElementById('spend-chart').getContext('2d');
   if (chartInstance) chartInstance.destroy();
   chartInstance = new Chart(ctx, {
     type: 'bar',
-    data: { labels: sortedMonths, datasets },
+    data: { labels: months, datasets },
     options: {
       responsive: true,
       maintainAspectRatio: false,
+      onClick: handleChartClick,
       scales: {
         x: { stacked: true, ticks: { color: '#9aa4b2' }, grid: { color: '#2a303a' } },
         y: { stacked: true, ticks: { color: '#9aa4b2' }, grid: { color: '#2a303a' } }
@@ -506,10 +575,136 @@ function renderOverview() {
   });
 }
 
+function handleChartClick(evt, elements) {
+  if (!elements.length) return;
+  if (drillState.level !== 'top') return; // only drill down one level from the top view
+  const datasetIndex = elements[0].datasetIndex;
+  const clickedCategory = chartInstance.data.datasets[datasetIndex]._category;
+  if (!clickedCategory) return;
+
+  if (categoryHasSubs(clickedCategory)) {
+    drillState = { level: 'sub', category: clickedCategory };
+  } else {
+    drillState = { level: 'merchant', category: clickedCategory };
+  }
+  renderSpendChart();
+}
+
+function drillBack() {
+  drillState = { level: 'top', category: null };
+  renderSpendChart();
+}
+
 function colorForIndex(i) {
   const palette = ['#5eb1ff', '#7ee8b8', '#ffb454', '#ff6b6b', '#c792ea', '#82e0f9',
                     '#f78c6c', '#89ddff', '#c3e88d', '#ffcb6b', '#f07178', '#addb67', '#ff5370'];
   return palette[i % palette.length];
+}
+
+// ============================================================
+// SAVINGS CHART (spend by card + salary-minus-spend line)
+// ============================================================
+function renderSavingsChart() {
+  const months = sortedMonthList();
+  const cards = [...new Set(dataset.map(i => i.card))];
+
+  const cardDatasets = cards.map((card, idx) => ({
+    label: card,
+    data: months.map(m => dataset.filter(i => i.month === m && i.card === card && i.category !== 'Excluded').reduce((s, i) => s + i.amount, 0)),
+    backgroundColor: colorForIndex(idx),
+    stack: 'spend',
+    type: 'bar',
+    yAxisID: 'y'
+  }));
+
+  const salaryByMonth = {};
+  dataset.filter(i => i.merchant === 'Lön (salary)').forEach(i => { salaryByMonth[i.month] = i.amount; });
+
+  const savingsData = months.map(m => {
+    if (!(m in salaryByMonth)) return null;
+    const spend = dataset.filter(i => i.month === m && i.category !== 'Excluded').reduce((s, i) => s + i.amount, 0);
+    return salaryByMonth[m] - spend;
+  });
+
+  const savingsDataset = {
+    label: 'Savings (salary − spend)',
+    data: savingsData,
+    type: 'line',
+    borderColor: '#e8eaed',
+    backgroundColor: '#e8eaed',
+    borderWidth: 2,
+    pointRadius: 3,
+    spanGaps: false,
+    yAxisID: 'y1'
+  };
+
+  const ctx = document.getElementById('savings-chart').getContext('2d');
+  if (savingsChartInstance) savingsChartInstance.destroy();
+  savingsChartInstance = new Chart(ctx, {
+    data: { labels: months, datasets: [...cardDatasets, savingsDataset] },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      scales: {
+        x: { stacked: true, ticks: { color: '#9aa4b2' }, grid: { color: '#2a303a' } },
+        y: { stacked: true, position: 'left', ticks: { color: '#9aa4b2' }, grid: { color: '#2a303a' } },
+        y1: { position: 'right', ticks: { color: '#9aa4b2' }, grid: { drawOnChartArea: false } }
+      },
+      plugins: {
+        legend: { labels: { color: '#e8eaed', boxWidth: 12, font: { size: 11 } } }
+      }
+    }
+  });
+}
+
+// ============================================================
+// TRANSACTIONS BROWSER
+// ============================================================
+function renderTransactionsBrowser() {
+  const monthSel = document.getElementById('txn-month-filter');
+  const catSel = document.getElementById('txn-category-filter');
+
+  const months = sortedMonthList();
+  monthSel.innerHTML = '<option value="">All months</option>' + months.map(m => `<option value="${m}">${m}</option>`).join('');
+
+  const topCategories = [...new Set(dataset.map(i => i.category.split(' > ')[0]))].sort();
+  catSel.innerHTML = '<option value="">All categories</option>' + topCategories.map(c => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join('');
+
+  monthSel.onchange = drawTransactionsTable;
+  catSel.onchange = drawTransactionsTable;
+  drawTransactionsTable();
+}
+
+function drawTransactionsTable() {
+  const month = document.getElementById('txn-month-filter').value;
+  const cat = document.getElementById('txn-category-filter').value;
+
+  let rows = dataset;
+  if (month) rows = rows.filter(i => i.month === month);
+  if (cat) rows = rows.filter(i => i.category.split(' > ')[0] === cat);
+
+  rows = rows.slice().sort((a, b) => b.txn_date.localeCompare(a.txn_date));
+
+  const total = rows.reduce((s, i) => s + i.amount, 0);
+  const capped = rows.slice(0, 300); // keep the DOM light; filters narrow it down further
+
+  let html = `<div style="margin: 10px 0; color: var(--text-dim); font-size: 13px;">
+    ${rows.length.toLocaleString()} transactions &middot; ${Math.round(total).toLocaleString()} kr total
+    ${rows.length > 300 ? ' &middot; showing most recent 300 — narrow with the filters above' : ''}
+  </div>`;
+  html += `<table><thead><tr><th>Date</th><th>Merchant</th><th>Amount</th><th>Category</th><th>Card</th></tr></thead><tbody>`;
+  capped.forEach(r => {
+    html += `<tr>
+      <td>${r.txn_date}</td>
+      <td>${escapeHtml(r.merchant)}</td>
+      <td>${r.amount.toFixed(2)}</td>
+      <td>${escapeHtml(r.category)}</td>
+      <td>${escapeHtml(r.card)}</td>
+    </tr>`;
+  });
+  html += `</tbody></table>`;
+
+  document.getElementById('txn-table-wrap').innerHTML = html;
 }
 
 // ============================================================
