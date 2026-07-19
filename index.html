@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Expense Tracker</title>
 <script src="https://accounts.google.com/gsi/client" async defer></script>
+<script src="https://apis.google.com/js/api.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="categorization-engine.js"></script>
@@ -120,8 +121,8 @@
   .badge.new { background: rgba(255,180,84,0.15); color: var(--warn); }
   .badge.matched { background: rgba(126,232,184,0.15); color: var(--accent-2); }
 
-  #signed-out-msg { text-align: center; padding: 60px 20px; color: var(--text-dim); }
-  #signed-out-msg h2 { color: var(--text); font-size: 20px; margin-bottom: 8px; }
+  #signed-out-msg, #no-folder-msg { text-align: center; padding: 60px 20px; color: var(--text-dim); }
+  #signed-out-msg h2, #no-folder-msg h2 { color: var(--text); font-size: 20px; margin-bottom: 8px; }
   .hidden { display: none !important; }
   .toast {
     position: fixed; bottom: 20px; right: 20px;
@@ -143,6 +144,7 @@
   </div>
   <div id="signin-area">
     <div id="user-chip"><img id="user-avatar" src="" alt=""><span id="user-name"></span></div>
+    <button id="connect-folder-btn" class="hidden">Connect Drive folder</button>
     <button id="signin-btn" class="primary">Sign in with Google</button>
     <button id="signout-btn" class="hidden">Sign out</button>
   </div>
@@ -152,6 +154,12 @@
   <div id="signed-out-msg">
     <h2>Sign in to load your data</h2>
     <p>Connect your Google account to read and update your expense data stored in Drive.</p>
+  </div>
+
+  <div id="no-folder-msg" class="hidden">
+    <h2>Connect your Drive folder</h2>
+    <p>Click "Connect Drive folder" above and select your Expense Tracker App folder.<br>
+    This app only ever sees the contents of the folder you pick — nothing else in your Drive.</p>
   </div>
 
   <div id="app-content" class="hidden">
@@ -188,8 +196,11 @@
 // Add this page's URL as an Authorized JavaScript origin
 // ============================================================
 const CLIENT_ID = '312075890401-qh3mmofr68m9baujmbiv2uqu9ft8n8af.apps.googleusercontent.com';
-const DRIVE_FOLDER_NAME = 'Expense Tracker App';
-const SCOPES = 'https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.readonly';
+const API_KEY = 'YOUR_API_KEY_HERE'; // Create in Cloud Console > Credentials > Create Credentials > API Key
+                                       // Restrict it to the Google Picker API + your GitHub Pages origin
+const DRIVE_FOLDER_NAME = 'Expense Tracker App'; // shown as a hint in the picker dialog title only
+const SCOPES = 'https://www.googleapis.com/auth/drive.file';
+const FOLDER_STORAGE_KEY = 'expense_tracker_folder_id';
 
 // ============================================================
 // STATE
@@ -221,8 +232,10 @@ function setStatus(msg) {
 }
 
 // ============================================================
-// GOOGLE SIGN-IN
+// GOOGLE SIGN-IN + PICKER
 // ============================================================
+let pickerLoaded = false;
+
 window.onload = () => {
   tokenClient = google.accounts.oauth2.initTokenClient({
     client_id: CLIENT_ID,
@@ -237,10 +250,13 @@ window.onload = () => {
     }
   });
 
+  gapi.load('picker', () => { pickerLoaded = true; });
+
   document.getElementById('signin-btn').addEventListener('click', () => {
     tokenClient.requestAccessToken();
   });
   document.getElementById('signout-btn').addEventListener('click', signOut);
+  document.getElementById('connect-folder-btn').addEventListener('click', openFolderPicker);
 
   setupImportUI();
 };
@@ -252,8 +268,10 @@ function signOut() {
   accessToken = null;
   document.getElementById('signin-btn').classList.remove('hidden');
   document.getElementById('signout-btn').classList.add('hidden');
+  document.getElementById('connect-folder-btn').classList.add('hidden');
   document.getElementById('user-chip').style.display = 'none';
   document.getElementById('app-content').classList.add('hidden');
+  document.getElementById('no-folder-msg').classList.add('hidden');
   document.getElementById('signed-out-msg').classList.remove('hidden');
   document.getElementById('header-sub').textContent = 'Not connected';
 }
@@ -262,8 +280,7 @@ async function onSignedIn() {
   document.getElementById('signin-btn').classList.add('hidden');
   document.getElementById('signout-btn').classList.remove('hidden');
   document.getElementById('signed-out-msg').classList.add('hidden');
-  document.getElementById('app-content').classList.remove('hidden');
-  document.getElementById('header-sub').textContent = 'Connected to Google Drive';
+  document.getElementById('header-sub').textContent = 'Signed in';
 
   try {
     const profile = await fetchUserProfile();
@@ -274,7 +291,19 @@ async function onSignedIn() {
     }
   } catch (e) { /* non-fatal */ }
 
-  await loadAllData();
+  // This app only ever sees the one Drive folder you explicitly select below.
+  // It cannot browse, list, or read anything else in your Drive.
+  const storedFolderId = localStorage.getItem(FOLDER_STORAGE_KEY);
+  if (storedFolderId) {
+    folderId = storedFolderId;
+    document.getElementById('connect-folder-btn').classList.remove('hidden');
+    document.getElementById('connect-folder-btn').textContent = 'Change Drive folder';
+    await loadAllData();
+  } else {
+    document.getElementById('connect-folder-btn').classList.remove('hidden');
+    document.getElementById('connect-folder-btn').textContent = 'Connect Drive folder';
+    document.getElementById('no-folder-msg').classList.remove('hidden');
+  }
 }
 
 async function fetchUserProfile() {
@@ -283,6 +312,42 @@ async function fetchUserProfile() {
   });
   if (!res.ok) return null;
   return res.json();
+}
+
+function openFolderPicker() {
+  if (!pickerLoaded) {
+    showToast('Picker still loading, try again in a second.', 'error');
+    return;
+  }
+  if (API_KEY === 'YOUR_API_KEY_HERE') {
+    showToast('Set your Google API key in the code before using the folder picker.', 'error');
+    return;
+  }
+  const view = new google.picker.DocsView(google.picker.ViewId.FOLDERS)
+    .setSelectFolderEnabled(true)
+    .setIncludeFolders(true)
+    .setMimeTypes('application/vnd.google-apps.folder');
+
+  const picker = new google.picker.PickerBuilder()
+    .addView(view)
+    .setOAuthToken(accessToken)
+    .setDeveloperKey(API_KEY)
+    .setTitle('Select your ' + DRIVE_FOLDER_NAME + ' folder')
+    .setCallback(onFolderPicked)
+    .build();
+  picker.setVisible(true);
+}
+
+async function onFolderPicked(data) {
+  if (data.action !== google.picker.Action.PICKED) return;
+  const doc = data.docs[0];
+  folderId = doc.id;
+  localStorage.setItem(FOLDER_STORAGE_KEY, folderId);
+  document.getElementById('connect-folder-btn').textContent = 'Change Drive folder';
+  document.getElementById('header-sub').textContent = 'Connected to "' + doc.name + '"';
+  document.getElementById('no-folder-msg').classList.add('hidden');
+  document.getElementById('app-content').classList.remove('hidden');
+  await loadAllData();
 }
 
 // ============================================================
@@ -298,13 +363,6 @@ async function driveFetch(url, options = {}) {
     throw new Error(`Drive API error ${res.status}: ${body}`);
   }
   return res;
-}
-
-async function findFolder(name) {
-  const q = encodeURIComponent(`mimeType='application/vnd.google-apps.folder' and name='${name}' and trashed=false`);
-  const res = await driveFetch(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name)`);
-  const data = await res.json();
-  return data.files && data.files.length ? data.files[0].id : null;
 }
 
 async function listFilesInFolder(fId) {
@@ -339,15 +397,13 @@ async function updateFileContent(fId, textContent, mimeType) {
 // LOAD DATA FROM DRIVE
 // ============================================================
 async function loadAllData() {
-  setStatus('Locating Drive folder…');
+  if (!folderId) {
+    setStatus('No Drive folder connected yet.');
+    return;
+  }
+  document.getElementById('no-folder-msg').classList.add('hidden');
+  document.getElementById('app-content').classList.remove('hidden');
   try {
-    folderId = await findFolder(DRIVE_FOLDER_NAME);
-    if (!folderId) {
-      setStatus('');
-      showToast(`Couldn't find a Drive folder named "${DRIVE_FOLDER_NAME}". Create it and add your data files.`, 'error');
-      return;
-    }
-
     setStatus('Listing files…');
     const files = await listFilesInFolder(folderId);
     fileIds = {};
@@ -373,7 +429,14 @@ async function loadAllData() {
     renderOverview();
   } catch (err) {
     setStatus('');
-    showToast('Error loading data: ' + err.message, 'error');
+    if (err.message && err.message.includes('404')) {
+      localStorage.removeItem(FOLDER_STORAGE_KEY);
+      folderId = null;
+      document.getElementById('connect-folder-btn').textContent = 'Connect Drive folder';
+      showToast('That folder is no longer accessible. Click "Connect Drive folder" to reselect it.', 'error');
+    } else {
+      showToast('Error loading data: ' + err.message, 'error');
+    }
     console.error(err);
   }
 }
