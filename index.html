@@ -1,0 +1,703 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Expense Tracker</title>
+<script src="https://accounts.google.com/gsi/client" async defer></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="categorization-engine.js"></script>
+<style>
+  :root {
+    --bg: #0f1216;
+    --panel: #171b21;
+    --panel-2: #1e232b;
+    --border: #2a303a;
+    --text: #e8eaed;
+    --text-dim: #9aa4b2;
+    --accent: #5eb1ff;
+    --accent-2: #7ee8b8;
+    --danger: #ff6b6b;
+    --warn: #ffb454;
+    --radius: 10px;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+  }
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 16px 24px;
+    border-bottom: 1px solid var(--border);
+    background: var(--panel);
+  }
+  header h1 { font-size: 18px; margin: 0; font-weight: 600; letter-spacing: 0.2px; }
+  header .sub { color: var(--text-dim); font-size: 13px; margin-top: 2px; }
+  #signin-area { display: flex; align-items: center; gap: 12px; }
+  #user-chip { display: none; align-items: center; gap: 8px; font-size: 13px; color: var(--text-dim); }
+  #user-chip img { width: 24px; height: 24px; border-radius: 50%; }
+  button {
+    font: inherit;
+    cursor: pointer;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: var(--panel-2);
+    color: var(--text);
+    padding: 8px 14px;
+    transition: background 0.15s, border-color 0.15s;
+  }
+  button:hover { background: #262c35; border-color: #3a4250; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #0b1420; font-weight: 600; }
+  button.primary:hover { background: #4aa0f2; }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  main { max-width: 1100px; margin: 0 auto; padding: 24px; }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 20px;
+    margin-bottom: 20px;
+  }
+  .card h2 { margin: 0 0 14px; font-size: 15px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.6px; }
+  #status-line { color: var(--text-dim); font-size: 13px; margin-bottom: 8px; min-height: 18px; }
+
+  .stat-row { display: flex; gap: 16px; flex-wrap: wrap; }
+  .stat {
+    flex: 1;
+    min-width: 140px;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 14px 16px;
+  }
+  .stat .label { font-size: 12px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.4px; }
+  .stat .value { font-size: 22px; font-weight: 600; margin-top: 4px; }
+
+  #chart-wrap { position: relative; height: 340px; margin-top: 16px; }
+
+  .drop-zone {
+    border: 2px dashed var(--border);
+    border-radius: var(--radius);
+    padding: 28px;
+    text-align: center;
+    color: var(--text-dim);
+    cursor: pointer;
+    transition: border-color 0.15s, background 0.15s;
+  }
+  .drop-zone:hover, .drop-zone.dragover { border-color: var(--accent); background: rgba(94,177,255,0.05); }
+  .drop-zone input { display: none; }
+  .format-row { display: flex; gap: 10px; margin-bottom: 14px; flex-wrap: wrap; }
+  .format-pill {
+    padding: 6px 12px;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    font-size: 12px;
+    color: var(--text-dim);
+    cursor: pointer;
+  }
+  .format-pill.active { border-color: var(--accent); color: var(--accent); background: rgba(94,177,255,0.08); }
+
+  table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 12px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); }
+  th { color: var(--text-dim); font-weight: 500; text-transform: uppercase; font-size: 11px; letter-spacing: 0.4px; }
+  select.cat-select {
+    background: var(--panel-2);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 4px 8px;
+    font-size: 13px;
+  }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; }
+  .badge.new { background: rgba(255,180,84,0.15); color: var(--warn); }
+  .badge.matched { background: rgba(126,232,184,0.15); color: var(--accent-2); }
+
+  #signed-out-msg { text-align: center; padding: 60px 20px; color: var(--text-dim); }
+  #signed-out-msg h2 { color: var(--text); font-size: 20px; margin-bottom: 8px; }
+  .hidden { display: none !important; }
+  .toast {
+    position: fixed; bottom: 20px; right: 20px;
+    background: var(--panel-2); border: 1px solid var(--border);
+    padding: 12px 18px; border-radius: 8px; font-size: 13px;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+    max-width: 320px;
+  }
+  .toast.error { border-color: var(--danger); color: var(--danger); }
+  .toast.success { border-color: var(--accent-2); color: var(--accent-2); }
+</style>
+</head>
+<body>
+
+<header>
+  <div>
+    <h1>Expense Tracker</h1>
+    <div class="sub" id="header-sub">Not connected</div>
+  </div>
+  <div id="signin-area">
+    <div id="user-chip"><img id="user-avatar" src="" alt=""><span id="user-name"></span></div>
+    <button id="signin-btn" class="primary">Sign in with Google</button>
+    <button id="signout-btn" class="hidden">Sign out</button>
+  </div>
+</header>
+
+<main>
+  <div id="signed-out-msg">
+    <h2>Sign in to load your data</h2>
+    <p>Connect your Google account to read and update your expense data stored in Drive.</p>
+  </div>
+
+  <div id="app-content" class="hidden">
+
+    <div class="card">
+      <h2>Overview</h2>
+      <div id="status-line"></div>
+      <div class="stat-row" id="stat-row"></div>
+      <div id="chart-wrap"><canvas id="spend-chart"></canvas></div>
+    </div>
+
+    <div class="card">
+      <h2>Import new transactions</h2>
+      <div class="format-row" id="format-row">
+        <div class="format-pill active" data-format="eurobonus">SAS EuroBonus (.xlsx)</div>
+        <div class="format-pill" data-format="amex">SAS Amex (.xlsx)</div>
+        <div class="format-pill" data-format="personkonto">Nordea Personkonto (.csv)</div>
+      </div>
+      <div class="drop-zone" id="drop-zone">
+        <input type="file" id="file-input" accept=".xlsx,.csv">
+        <div id="drop-label">Drop a file here, or click to choose</div>
+      </div>
+      <div id="import-results"></div>
+    </div>
+
+  </div>
+</main>
+
+<script>
+// ============================================================
+// CONFIGURATION - replace with your own OAuth Client ID
+// Create one at https://console.cloud.google.com
+// APIs & Services > Credentials > Create OAuth client ID > Web application
+// Add this page's URL as an Authorized JavaScript origin
+// ============================================================
+const CLIENT_ID = 'YOUR_CLIENT_ID_HERE.apps.googleusercontent.com';
+const DRIVE_FOLDER_NAME = 'Expense Tracker App';
+const SCOPES = 'https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.readonly';
+
+// ============================================================
+// STATE
+// ============================================================
+let accessToken = null;
+let tokenClient = null;
+let folderId = null;
+let fileIds = {}; // { 'canonical_dataset.json': '<driveFileId>', ... }
+let dataset = [];
+let aliases = {};
+let overrides = {};
+let learnedLookup = {};
+let chartInstance = null;
+let selectedFormat = 'eurobonus';
+let pendingImport = null; // { results, unmatched, format }
+
+// ============================================================
+// UI HELPERS
+// ============================================================
+function showToast(msg, type) {
+  const t = document.createElement('div');
+  t.className = 'toast' + (type ? ' ' + type : '');
+  t.textContent = msg;
+  document.body.appendChild(t);
+  setTimeout(() => t.remove(), 4500);
+}
+function setStatus(msg) {
+  document.getElementById('status-line').textContent = msg;
+}
+
+// ============================================================
+// GOOGLE SIGN-IN
+// ============================================================
+window.onload = () => {
+  tokenClient = google.accounts.oauth2.initTokenClient({
+    client_id: CLIENT_ID,
+    scope: SCOPES,
+    callback: async (resp) => {
+      if (resp.error) {
+        showToast('Sign-in failed: ' + resp.error, 'error');
+        return;
+      }
+      accessToken = resp.access_token;
+      await onSignedIn();
+    }
+  });
+
+  document.getElementById('signin-btn').addEventListener('click', () => {
+    tokenClient.requestAccessToken();
+  });
+  document.getElementById('signout-btn').addEventListener('click', signOut);
+
+  setupImportUI();
+};
+
+function signOut() {
+  if (accessToken) {
+    google.accounts.oauth2.revoke(accessToken, () => {});
+  }
+  accessToken = null;
+  document.getElementById('signin-btn').classList.remove('hidden');
+  document.getElementById('signout-btn').classList.add('hidden');
+  document.getElementById('user-chip').style.display = 'none';
+  document.getElementById('app-content').classList.add('hidden');
+  document.getElementById('signed-out-msg').classList.remove('hidden');
+  document.getElementById('header-sub').textContent = 'Not connected';
+}
+
+async function onSignedIn() {
+  document.getElementById('signin-btn').classList.add('hidden');
+  document.getElementById('signout-btn').classList.remove('hidden');
+  document.getElementById('signed-out-msg').classList.add('hidden');
+  document.getElementById('app-content').classList.remove('hidden');
+  document.getElementById('header-sub').textContent = 'Connected to Google Drive';
+
+  try {
+    const profile = await fetchUserProfile();
+    if (profile) {
+      document.getElementById('user-avatar').src = profile.picture || '';
+      document.getElementById('user-name').textContent = profile.name || profile.email || '';
+      document.getElementById('user-chip').style.display = 'flex';
+    }
+  } catch (e) { /* non-fatal */ }
+
+  await loadAllData();
+}
+
+async function fetchUserProfile() {
+  const res = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
+    headers: { Authorization: 'Bearer ' + accessToken }
+  });
+  if (!res.ok) return null;
+  return res.json();
+}
+
+// ============================================================
+// DRIVE API HELPERS
+// ============================================================
+async function driveFetch(url, options = {}) {
+  const res = await fetch(url, {
+    ...options,
+    headers: { Authorization: 'Bearer ' + accessToken, ...(options.headers || {}) }
+  });
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`Drive API error ${res.status}: ${body}`);
+  }
+  return res;
+}
+
+async function findFolder(name) {
+  const q = encodeURIComponent(`mimeType='application/vnd.google-apps.folder' and name='${name}' and trashed=false`);
+  const res = await driveFetch(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name)`);
+  const data = await res.json();
+  return data.files && data.files.length ? data.files[0].id : null;
+}
+
+async function listFilesInFolder(fId) {
+  const q = encodeURIComponent(`'${fId}' in parents and trashed=false`);
+  const res = await driveFetch(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name)&pageSize=100`);
+  const data = await res.json();
+  return data.files || [];
+}
+
+async function downloadFile(fId) {
+  const res = await driveFetch(`https://www.googleapis.com/drive/v3/files/${fId}?alt=media`);
+  return res.text();
+}
+
+async function updateFileContent(fId, textContent, mimeType) {
+  const res = await fetch(`https://www.googleapis.com/upload/drive/v3/files/${fId}?uploadType=media`, {
+    method: 'PATCH',
+    headers: {
+      Authorization: 'Bearer ' + accessToken,
+      'Content-Type': mimeType || 'application/json'
+    },
+    body: textContent
+  });
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`Drive update failed ${res.status}: ${body}`);
+  }
+  return res.json();
+}
+
+// ============================================================
+// LOAD DATA FROM DRIVE
+// ============================================================
+async function loadAllData() {
+  setStatus('Locating Drive folder…');
+  try {
+    folderId = await findFolder(DRIVE_FOLDER_NAME);
+    if (!folderId) {
+      setStatus('');
+      showToast(`Couldn't find a Drive folder named "${DRIVE_FOLDER_NAME}". Create it and add your data files.`, 'error');
+      return;
+    }
+
+    setStatus('Listing files…');
+    const files = await listFilesInFolder(folderId);
+    fileIds = {};
+    files.forEach(f => { fileIds[f.name] = f.id; });
+
+    const required = ['canonical_dataset.json', 'canonical_aliases.json', 'canonical_overrides.json', 'merchant_category_lookup.json'];
+    const missing = required.filter(name => !fileIds[name]);
+    if (missing.length) {
+      setStatus('');
+      showToast('Missing files in Drive folder: ' + missing.join(', '), 'error');
+      return;
+    }
+
+    setStatus('Loading transactions…');
+    dataset = JSON.parse(await downloadFile(fileIds['canonical_dataset.json']));
+
+    setStatus('Loading category rules…');
+    aliases = JSON.parse(await downloadFile(fileIds['canonical_aliases.json']));
+    overrides = JSON.parse(await downloadFile(fileIds['canonical_overrides.json']));
+    learnedLookup = JSON.parse(await downloadFile(fileIds['merchant_category_lookup.json']));
+
+    setStatus(`Loaded ${dataset.length} transactions.`);
+    renderOverview();
+  } catch (err) {
+    setStatus('');
+    showToast('Error loading data: ' + err.message, 'error');
+    console.error(err);
+  }
+}
+
+// ============================================================
+// OVERVIEW / DASHBOARD
+// ============================================================
+function renderOverview() {
+  const total = dataset.reduce((s, i) => s + i.amount, 0);
+  const months = [...new Set(dataset.map(i => i.month))];
+  const byCategory = {};
+  dataset.forEach(i => {
+    const top = i.category.split(' > ')[0];
+    byCategory[top] = (byCategory[top] || 0) + i.amount;
+  });
+
+  const statRow = document.getElementById('stat-row');
+  statRow.innerHTML = '';
+  const stats = [
+    { label: 'Transactions', value: dataset.length.toLocaleString() },
+    { label: 'Total tracked', value: Math.round(total).toLocaleString() + ' kr' },
+    { label: 'Months covered', value: months.length },
+  ];
+  stats.forEach(s => {
+    const el = document.createElement('div');
+    el.className = 'stat';
+    el.innerHTML = `<div class="label">${s.label}</div><div class="value">${s.value}</div>`;
+    statRow.appendChild(el);
+  });
+
+  // sort months chronologically using txn_date order
+  const monthOrder = {};
+  dataset.forEach(i => { if (!(i.month in monthOrder)) monthOrder[i.month] = i.txn_date; });
+  const sortedMonths = months.sort((a, b) => monthOrder[a].localeCompare(monthOrder[b]));
+
+  const categories = Object.keys(byCategory).filter(c => c !== 'Excluded');
+  const datasets = categories.map((cat, idx) => {
+    const data = sortedMonths.map(m => {
+      return dataset
+        .filter(i => i.month === m && i.category.split(' > ')[0] === cat)
+        .reduce((s, i) => s + i.amount, 0);
+    });
+    return {
+      label: cat,
+      data,
+      backgroundColor: colorForIndex(idx),
+      stack: 'spend'
+    };
+  });
+
+  const ctx = document.getElementById('spend-chart').getContext('2d');
+  if (chartInstance) chartInstance.destroy();
+  chartInstance = new Chart(ctx, {
+    type: 'bar',
+    data: { labels: sortedMonths, datasets },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      scales: {
+        x: { stacked: true, ticks: { color: '#9aa4b2' }, grid: { color: '#2a303a' } },
+        y: { stacked: true, ticks: { color: '#9aa4b2' }, grid: { color: '#2a303a' } }
+      },
+      plugins: {
+        legend: { labels: { color: '#e8eaed', boxWidth: 12, font: { size: 11 } } }
+      }
+    }
+  });
+}
+
+function colorForIndex(i) {
+  const palette = ['#5eb1ff', '#7ee8b8', '#ffb454', '#ff6b6b', '#c792ea', '#82e0f9',
+                    '#f78c6c', '#89ddff', '#c3e88d', '#ffcb6b', '#f07178', '#addb67', '#ff5370'];
+  return palette[i % palette.length];
+}
+
+// ============================================================
+// IMPORT UI
+// ============================================================
+function setupImportUI() {
+  document.querySelectorAll('.format-pill').forEach(pill => {
+    pill.addEventListener('click', () => {
+      document.querySelectorAll('.format-pill').forEach(p => p.classList.remove('active'));
+      pill.classList.add('active');
+      selectedFormat = pill.dataset.format;
+      const label = document.getElementById('drop-label');
+      const ext = selectedFormat === 'personkonto' ? '.csv' : '.xlsx';
+      document.getElementById('file-input').accept = ext;
+      label.textContent = `Drop a ${ext} file here, or click to choose`;
+    });
+  });
+
+  const dropZone = document.getElementById('drop-zone');
+  const fileInput = document.getElementById('file-input');
+
+  dropZone.addEventListener('click', () => fileInput.click());
+  dropZone.addEventListener('dragover', (e) => { e.preventDefault(); dropZone.classList.add('dragover'); });
+  dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
+  dropZone.addEventListener('drop', (e) => {
+    e.preventDefault();
+    dropZone.classList.remove('dragover');
+    if (e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]);
+  });
+  fileInput.addEventListener('change', (e) => {
+    if (e.target.files.length) handleFile(e.target.files[0]);
+  });
+}
+
+async function handleFile(file) {
+  if (!dataset.length) {
+    showToast('Sign in and let data finish loading first.', 'error');
+    return;
+  }
+  setStatus('Reading file…');
+  try {
+    let rawRows;
+    if (selectedFormat === 'personkonto') {
+      rawRows = await parsePersonkontoCSV(file);
+    } else {
+      rawRows = await parseXlsx(file, selectedFormat);
+    }
+
+    const { results, unmatched } = processImport(rawRows, selectedFormat, aliases, overrides, learnedLookup);
+    pendingImport = { results, unmatched, format: selectedFormat };
+    renderImportResults(results, unmatched);
+    setStatus('');
+  } catch (err) {
+    setStatus('');
+    showToast('Import failed: ' + err.message, 'error');
+    console.error(err);
+  }
+}
+
+function parseXlsx(file, format) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const wb = XLSX.read(e.target.result, { type: 'array', cellDates: false });
+        if (format === 'eurobonus') {
+          const sheet = wb.Sheets['Transaktioner'] || wb.Sheets[wb.SheetNames[0]];
+          const rows = XLSX.utils.sheet_to_json(sheet, { header: ['Datum','Bokfort','Specifikation','Ort','Valuta','Utl_belopp','Belopp'], range: 3, raw: true });
+          const clean = rows
+            .filter(r => r.Datum && typeof r.Belopp === 'number')
+            .map(r => ({
+              Datum: normalizeDate(r.Datum),
+              Specifikation: String(r.Specifikation || '').trim(),
+              Belopp: r.Belopp
+            }));
+          resolve(clean);
+        } else if (format === 'amex') {
+          const sheet = wb.Sheets['Transaktionsspecifikationer'] || wb.Sheets[wb.SheetNames[0]];
+          const rows = XLSX.utils.sheet_to_json(sheet, { header: ['Datum','Beskrivning','Belopp','Utokade','Kontoutdrag','Adress','Ort','Postnr','Land','Referens'], range: 6, raw: true });
+          const clean = rows
+            .filter(r => r.Datum && r.Datum !== 'Datum' && r.Beskrivning)
+            .map(r => ({
+              Datum: normalizeAmexDate(r.Datum),
+              Beskrivning: String(r.Beskrivning).trim(),
+              Belopp: parseFloat(r.Belopp)
+            }))
+            .filter(r => !isNaN(r.Belopp));
+          resolve(clean);
+        } else {
+          reject(new Error('Unknown xlsx format'));
+        }
+      } catch (err) { reject(err); }
+    };
+    reader.onerror = reject;
+    reader.readAsArrayBuffer(file);
+  });
+}
+
+function normalizeDate(val) {
+  // handles Excel serial dates or date strings -> YYYY-MM-DD
+  if (typeof val === 'number') {
+    const d = XLSX.SSF.parse_date_code(val);
+    return `${d.y}-${String(d.m).padStart(2,'0')}-${String(d.d).padStart(2,'0')}`;
+  }
+  return String(val).slice(0, 10);
+}
+function normalizeAmexDate(val) {
+  // MM/DD/YYYY -> YYYY-MM-DD
+  if (typeof val === 'number') return normalizeDate(val);
+  const parts = String(val).split('/');
+  if (parts.length === 3) {
+    return `${parts[2]}-${parts[0].padStart(2,'0')}-${parts[1].padStart(2,'0')}`;
+  }
+  return String(val);
+}
+
+function parsePersonkontoCSV(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        let text = e.target.result;
+        if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1); // strip BOM
+        const lines = text.split(/\r?\n/).filter(l => l.trim());
+        const header = lines[0].split(';');
+        const idx = {
+          date: header.indexOf('Bokföringsdag'),
+          amount: header.indexOf('Belopp'),
+          rubrik: header.indexOf('Rubrik')
+        };
+        const rows = [];
+        for (let i = 1; i < lines.length; i++) {
+          const cols = lines[i].split(';');
+          if (cols.length < header.length) continue;
+          const dateStr = cols[idx.date].replace(/\//g, '-');
+          const amountStr = cols[idx.amount].replace(/\s/g, '').replace(',', '.');
+          rows.push({
+            Bokforingsdag: dateStr,
+            Belopp: parseFloat(amountStr),
+            Rubrik: cols[idx.rubrik]
+          });
+        }
+        resolve(rows.filter(r => !isNaN(r.Belopp)));
+      } catch (err) { reject(err); }
+    };
+    reader.onerror = reject;
+    reader.readAsText(file, 'utf-8');
+  });
+}
+
+function renderImportResults(results, unmatched) {
+  const container = document.getElementById('import-results');
+  const total = results.reduce((s, r) => s + r.amount, 0);
+
+  let html = `<div class="stat-row" style="margin-top:16px;">
+    <div class="stat"><div class="label">Parsed</div><div class="value">${results.length}</div></div>
+    <div class="stat"><div class="label">Total</div><div class="value">${Math.round(total).toLocaleString()} kr</div></div>
+    <div class="stat"><div class="label">Needs review</div><div class="value">${unmatched.length}</div></div>
+  </div>`;
+
+  if (unmatched.length) {
+    html += `<table><thead><tr><th>Date</th><th>Merchant</th><th>Amount</th><th>Category</th></tr></thead><tbody>`;
+    unmatched.forEach((r, idx) => {
+      html += `<tr>
+        <td>${r.txn_date}</td>
+        <td>${escapeHtml(r.merchant)}</td>
+        <td>${r.amount.toFixed(2)}</td>
+        <td>${categorySelectHtml(idx)}</td>
+      </tr>`;
+    });
+    html += `</tbody></table>`;
+  }
+
+  html += `<div style="margin-top:16px; display:flex; gap:10px;">
+    <button class="primary" id="save-import-btn">Save to Drive</button>
+    <button id="discard-import-btn">Discard</button>
+  </div>`;
+
+  container.innerHTML = html;
+
+  document.getElementById('save-import-btn').addEventListener('click', saveImport);
+  document.getElementById('discard-import-btn').addEventListener('click', () => {
+    pendingImport = null;
+    container.innerHTML = '';
+  });
+}
+
+function categorySelectHtml(unmatchedIdx) {
+  const leaves = (typeof LEAF_CATEGORIES !== 'undefined') ? LEAF_CATEGORIES : ['Other > Uncategorized'];
+  let opts = leaves.map(c => `<option value="${escapeHtml(c)}"${c === 'Other > Uncategorized' ? ' selected' : ''}>${escapeHtml(c)}</option>`).join('');
+  return `<select class="cat-select" data-unmatched-idx="${unmatchedIdx}">${opts}</select>`;
+}
+
+function escapeHtml(str) {
+  const div = document.createElement('div');
+  div.textContent = str;
+  return div.innerHTML;
+}
+
+async function saveImport() {
+  if (!pendingImport) return;
+  setStatus('Saving to Drive…');
+
+  // apply any manual category picks for unmatched rows
+  const selects = document.querySelectorAll('#import-results select[data-unmatched-idx]');
+  const newOverrides = { ...overrides };
+  selects.forEach(sel => {
+    const idx = parseInt(sel.dataset.unmatchedIdx, 10);
+    const row = pendingImport.unmatched[idx];
+    const chosenCategory = sel.value;
+    if (row && chosenCategory !== 'Other > Uncategorized') {
+      newOverrides[row.merchant] = chosenCategory;
+      row.category = chosenCategory;
+    }
+  });
+
+  // merge: assign new ids, append to dataset
+  const maxId = dataset.reduce((m, i) => Math.max(m, i.id), 0);
+  const merged = pendingImport.results.map((r, i) => ({
+    id: maxId + 1 + i,
+    month: monthLabel(r.txn_date),
+    merchant: r.merchant,
+    amount: r.amount,
+    category: r.category,
+    txn_date: r.txn_date,
+    card: r.card
+  }));
+
+  dataset = dataset.concat(merged);
+  overrides = newOverrides;
+
+  try {
+    await updateFileContent(fileIds['canonical_dataset.json'], JSON.stringify(dataset));
+    await updateFileContent(fileIds['canonical_overrides.json'], JSON.stringify(overrides, null, 2));
+    setStatus(`Saved. ${merged.length} transactions added.`);
+    showToast(`Saved ${merged.length} transactions to Drive.`, 'success');
+    pendingImport = null;
+    document.getElementById('import-results').innerHTML = '';
+    renderOverview();
+  } catch (err) {
+    setStatus('');
+    showToast('Save failed: ' + err.message, 'error');
+    console.error(err);
+  }
+}
+
+function monthLabel(dateStr) {
+  const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const [y, m] = dateStr.split('-');
+  return months[parseInt(m,10)-1] + '-' + y.slice(2);
+}
+</script>
+</body>
+</html>
