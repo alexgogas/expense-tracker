@@ -150,12 +150,25 @@ function parsePersonkontoRows(rows) {
 }
 
 // ---------- Full pipeline: parse + categorize + merge ----------
+// Guards against summary/footer/total rows in a bank export leaking through as fake
+// transactions — e.g. a trailing "Totalt belopp" row whose amount column happens to hold a
+// real number. A row only counts as a transaction if it has a well-formed date, a non-empty
+// merchant, and a finite amount.
+function isValidParsedRow(row) {
+  return !!(row &&
+    typeof row.txn_date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(row.txn_date) &&
+    row.merchant && String(row.merchant).trim().length > 0 &&
+    typeof row.amount === 'number' && isFinite(row.amount));
+}
+
 function processImport(rawRows, format, aliases, overrides, learnedLookup) {
   let parsed;
   if (format === 'eurobonus') parsed = parseEuroBonusRows(rawRows);
   else if (format === 'amex') parsed = parseAmexRows(rawRows);
   else if (format === 'personkonto') parsed = parsePersonkontoRows(rawRows);
   else throw new Error('Unknown format: ' + format);
+
+  parsed = parsed.filter(isValidParsedRow);
 
   const results = [];
   const unmatched = [];
@@ -184,7 +197,7 @@ function processImport(rawRows, format, aliases, overrides, learnedLookup) {
 // Exports for use in the browser app
 if (typeof module !== 'undefined') {
   module.exports = {
-    CATEGORY_TREE, LEAF_CATEGORIES, categorizeMerchant, processImport,
+    CATEGORY_TREE, LEAF_CATEGORIES, categorizeMerchant, processImport, isValidParsedRow,
     parseEuroBonusRows, parseAmexRows, parsePersonkontoRows, generateLoanEntries
   };
 }

@@ -68,6 +68,13 @@
     margin-bottom: 20px;
   }
   .card h2 { margin: 0 0 14px; font-size: 15px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.6px; }
+  .card > summary { cursor: pointer; list-style: none; }
+  .card > summary::-webkit-details-marker { display: none; }
+  .card > summary h2::before {
+    content: '▸'; display: inline-block; margin-right: 8px;
+    color: var(--text-dim); font-size: 11px; transition: transform 0.15s;
+  }
+  .card[open] > summary h2::before { transform: rotate(90deg); }
   #status-line { color: var(--text-dim); font-size: 13px; margin-bottom: 8px; min-height: 18px; }
 
   .stat-row { display: flex; gap: 16px; flex-wrap: wrap; }
@@ -208,8 +215,8 @@
 
   <div id="app-content" class="hidden">
 
-    <div class="card">
-      <h2>Overview</h2>
+    <details class="card" open>
+      <summary><h2>Overview</h2></summary>
       <div id="status-line"></div>
       <div class="stat-row" id="stat-row"></div>
       <div id="range-filter-row">
@@ -223,18 +230,20 @@
       </div>
       <div id="chart-wrap"><canvas id="spend-chart"></canvas></div>
       <div id="merchant-summary-wrap"></div>
-    </div>
+    </details>
 
-    <div class="card">
-      <div style="display:flex; align-items:center; justify-content:space-between;">
-        <h2 style="margin:0;">Savings</h2>
-        <button id="export-savings-chart-btn" class="btn-sm">Export chart</button>
-      </div>
+    <details class="card" open>
+      <summary>
+        <div style="display:flex; align-items:center; justify-content:space-between;">
+          <h2 style="margin:0;">Savings</h2>
+          <button id="export-savings-chart-btn" class="btn-sm">Export chart</button>
+        </div>
+      </summary>
       <div id="savings-chart-wrap" style="position:relative; height:300px; margin-top:14px;"><canvas id="savings-chart"></canvas></div>
-    </div>
+    </details>
 
-    <div class="card">
-      <h2>Transactions</h2>
+    <details class="card">
+      <summary><h2>Transactions</h2></summary>
       <div class="format-row">
         <select id="txn-category-filter" class="cat-select"><option value="">All categories</option></select>
         <select id="txn-card-filter" class="cat-select"><option value="">All cards</option></select>
@@ -244,10 +253,10 @@
         <button class="primary btn-sm" id="save-changes-btn">Save to Drive</button>
       </div>
       <div id="txn-table-wrap"></div>
-    </div>
+    </details>
 
-    <div class="card">
-      <h2>Categories</h2>
+    <details class="card">
+      <summary><h2>Categories</h2></summary>
       <p style="color: var(--text-dim); font-size: 13px; margin: 0 0 14px;">
         Renaming a category or subcategory updates every transaction using it. A category or
         subcategory can't be deleted while transactions still use it — recategorize them first.
@@ -256,10 +265,10 @@
       <div style="margin-top: 14px;">
         <button id="add-category-btn" class="btn-sm">+ Add category</button>
       </div>
-    </div>
+    </details>
 
-    <div class="card">
-      <h2>Import new transactions</h2>
+    <details class="card" open>
+      <summary><h2>Import new transactions</h2></summary>
       <div class="format-row" id="format-row">
         <div class="format-pill active" data-format="eurobonus">SAS EuroBonus (.xlsx)</div>
         <div class="format-pill" data-format="amex">SAS Amex (.xlsx)</div>
@@ -270,7 +279,7 @@
         <div id="drop-label">Drop a file here, or click to choose</div>
       </div>
       <div id="import-results"></div>
-    </div>
+    </details>
 
   </div>
 </main>
@@ -356,7 +365,10 @@ window.onload = () => {
   document.getElementById('grant-file-access-btn').addEventListener('click', openFileAccessPicker);
 
   document.getElementById('export-spend-chart-btn').addEventListener('click', () => downloadChartPNG(chartInstance, 'spend-chart.png'));
-  document.getElementById('export-savings-chart-btn').addEventListener('click', () => downloadChartPNG(savingsChartInstance, 'savings-chart.png'));
+  document.getElementById('export-savings-chart-btn').addEventListener('click', (e) => {
+    e.stopPropagation(); // this button sits inside the collapsible card's <summary> — don't toggle it
+    downloadChartPNG(savingsChartInstance, 'savings-chart.png');
+  });
   document.getElementById('save-changes-btn').addEventListener('click', saveAllChanges);
   document.getElementById('add-category-btn').addEventListener('click', addCategory);
 
