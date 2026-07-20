@@ -1185,10 +1185,18 @@ function markUnsaved() {
 function recategorizeTransaction(id, newCategory) {
   const txn = dataset.find(t => t.id === id);
   if (!txn || txn.category === newCategory) return;
-  txn.category = newCategory;
-  overrides[txn.merchant] = newCategory;
+  const merchant = txn.merchant;
+  let count = 0;
+  dataset.forEach(t => {
+    if (t.merchant === merchant && t.category !== newCategory) {
+      t.category = newCategory;
+      count++;
+    }
+  });
+  overrides[merchant] = newCategory;
   markUnsaved();
   refreshViews();
+  if (count > 1) showToast(`Recategorized all ${count} "${merchant}" transactions to ${newCategory}.`, 'success');
 }
 
 function updateUnsavedBar() {
