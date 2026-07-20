@@ -124,6 +124,24 @@
   .badge.new { background: rgba(255,180,84,0.15); color: var(--warn); }
   .badge.matched { background: rgba(126,232,184,0.15); color: var(--accent-2); }
 
+  #range-filter-row { display: flex; align-items: center; gap: 18px; margin-top: 14px; font-size: 13px; color: var(--text-dim); flex-wrap: wrap; }
+  #range-filter-row label { display: flex; align-items: center; gap: 6px; }
+
+  details.cat-group { border: 1px solid var(--border); border-radius: 8px; margin-bottom: 8px; overflow: hidden; }
+  details.cat-group > summary {
+    cursor: pointer; padding: 10px 12px; background: var(--panel-2);
+    list-style: none; display: flex; justify-content: space-between; align-items: center;
+    font-size: 13px; gap: 12px;
+  }
+  details.cat-group > summary::-webkit-details-marker { display: none; }
+  details.cat-group > summary .name { color: var(--text); font-weight: 600; }
+  details.cat-group > summary .meta { color: var(--text-dim); font-size: 12px; white-space: nowrap; }
+  details.cat-group > summary .caret { display: inline-block; margin-right: 6px; color: var(--text-dim); transition: transform 0.15s; }
+  details.cat-group[open] > summary .caret { transform: rotate(90deg); }
+  details.cat-group .sub-group { margin: 8px 12px; }
+  details.cat-group table { margin: 0 12px 12px; width: calc(100% - 24px); }
+  details.cat-group .sub-group table { margin: 0 0 10px; width: 100%; }
+
   #signed-out-msg, #no-folder-msg { text-align: center; padding: 60px 20px; color: var(--text-dim); }
   #signed-out-msg h2, #no-folder-msg h2 { color: var(--text); font-size: 20px; margin-bottom: 8px; }
   .hidden { display: none !important; }
@@ -171,11 +189,16 @@
       <h2>Overview</h2>
       <div id="status-line"></div>
       <div class="stat-row" id="stat-row"></div>
+      <div id="range-filter-row">
+        <label>From <select id="range-from-filter" class="cat-select"></select></label>
+        <label>To <select id="range-to-filter" class="cat-select"></select></label>
+      </div>
       <div id="breadcrumb-row" class="hidden">
         <button id="breadcrumb-back">&larr; Back</button>
         <span id="breadcrumb-label"></span>
       </div>
       <div id="chart-wrap"><canvas id="spend-chart"></canvas></div>
+      <div id="merchant-summary-wrap"></div>
     </div>
 
     <div class="card">
@@ -186,7 +209,6 @@
     <div class="card">
       <h2>Transactions</h2>
       <div class="format-row">
-        <select id="txn-month-filter" class="cat-select"><option value="">All months</option></select>
         <select id="txn-category-filter" class="cat-select"><option value="">All categories</option></select>
       </div>
       <div id="txn-table-wrap"></div>
@@ -466,12 +488,61 @@ async function loadAllData() {
 // ============================================================
 let drillState = { level: 'top', category: null }; // level: 'top' | 'sub' | 'merchant'
 let savingsChartInstance = null;
+let rangeFilter = { from: null, to: null }; // month labels, inclusive
 
 function sortedMonthList() {
   const months = [...new Set(dataset.map(i => i.month))];
   const monthOrder = {};
   dataset.forEach(i => { if (!(i.month in monthOrder)) monthOrder[i.month] = i.txn_date; });
   return months.sort((a, b) => monthOrder[a].localeCompare(monthOrder[b]));
+}
+
+function visibleMonths() {
+  const months = sortedMonthList();
+  if (!rangeFilter.from || !rangeFilter.to) return months;
+  const fromIdx = months.indexOf(rangeFilter.from);
+  const toIdx = months.indexOf(rangeFilter.to);
+  if (fromIdx === -1 || toIdx === -1) return months;
+  return months.slice(fromIdx, toIdx + 1);
+}
+
+function rangeFilteredDataset() {
+  const months = new Set(visibleMonths());
+  return dataset.filter(i => months.has(i.month));
+}
+
+function renderRangeFilter() {
+  const months = sortedMonthList();
+  const fromSel = document.getElementById('range-from-filter');
+  const toSel = document.getElementById('range-to-filter');
+  const opts = months.map(m => `<option value="${m}">${m}</option>`).join('');
+  fromSel.innerHTML = opts;
+  toSel.innerHTML = opts;
+  fromSel.value = rangeFilter.from;
+  toSel.value = rangeFilter.to;
+
+  fromSel.onchange = () => {
+    rangeFilter.from = fromSel.value;
+    if (months.indexOf(rangeFilter.from) > months.indexOf(rangeFilter.to)) {
+      rangeFilter.to = rangeFilter.from;
+      toSel.value = rangeFilter.to;
+    }
+    onRangeChange();
+  };
+  toSel.onchange = () => {
+    rangeFilter.to = toSel.value;
+    if (months.indexOf(rangeFilter.to) < months.indexOf(rangeFilter.from)) {
+      rangeFilter.from = rangeFilter.to;
+      fromSel.value = rangeFilter.from;
+    }
+    onRangeChange();
+  };
+}
+
+function onRangeChange() {
+  renderSpendChart();
+  renderSavingsChart();
+  drawTransactionsTable();
 }
 
 function categoryHasSubs(topCategory) {
@@ -483,6 +554,8 @@ function renderOverview() {
   drillState = { level: 'top', category: null };
   const total = dataset.reduce((s, i) => s + i.amount, 0);
   const months = sortedMonthList();
+  rangeFilter = { from: months[0] || null, to: months[months.length - 1] || null };
+  renderRangeFilter();
 
   const statRow = document.getElementById('stat-row');
   statRow.innerHTML = '';
@@ -505,12 +578,13 @@ function renderOverview() {
 
 function renderSpendChart() {
   document.getElementById('breadcrumb-back').onclick = drillBack;
-  const months = sortedMonthList();
+  const months = visibleMonths();
+  const rows = rangeFilteredDataset();
   let datasets, breadcrumbVisible = false, breadcrumbText = '';
 
   if (drillState.level === 'top') {
     const byCategory = {};
-    dataset.forEach(i => {
+    rows.forEach(i => {
       const top = i.category.split(' > ')[0];
       if (top === 'Excluded') return;
       byCategory[top] = true;
@@ -518,7 +592,7 @@ function renderSpendChart() {
     const categories = Object.keys(byCategory);
     datasets = categories.map((cat, idx) => ({
       label: cat,
-      data: months.map(m => dataset.filter(i => i.month === m && i.category.split(' > ')[0] === cat).reduce((s, i) => s + i.amount, 0)),
+      data: months.map(m => rows.filter(i => i.month === m && i.category.split(' > ')[0] === cat).reduce((s, i) => s + i.amount, 0)),
       backgroundColor: colorForIndex(idx),
       stack: 'spend',
       _category: cat
@@ -529,7 +603,7 @@ function renderSpendChart() {
     const subs = entry.subs;
     datasets = subs.map((sub, idx) => ({
       label: sub,
-      data: months.map(m => dataset.filter(i => i.month === m && i.category === cat + ' > ' + sub).reduce((s, i) => s + i.amount, 0)),
+      data: months.map(m => rows.filter(i => i.month === m && i.category === cat + ' > ' + sub).reduce((s, i) => s + i.amount, 0)),
       backgroundColor: colorForIndex(idx),
       stack: 'spend'
     }));
@@ -538,13 +612,13 @@ function renderSpendChart() {
   } else if (drillState.level === 'merchant') {
     const cat = drillState.category;
     const merchantTotals = {};
-    dataset.filter(i => i.category.split(' > ')[0] === cat).forEach(i => {
+    rows.filter(i => i.category.split(' > ')[0] === cat).forEach(i => {
       merchantTotals[i.merchant] = (merchantTotals[i.merchant] || 0) + i.amount;
     });
     const topMerchants = Object.entries(merchantTotals).sort((a, b) => b[1] - a[1]).slice(0, 8).map(e => e[0]);
     datasets = topMerchants.map((merch, idx) => ({
       label: merch,
-      data: months.map(m => dataset.filter(i => i.month === m && i.merchant === merch && i.category.split(' > ')[0] === cat).reduce((s, i) => s + i.amount, 0)),
+      data: months.map(m => rows.filter(i => i.month === m && i.merchant === merch && i.category.split(' > ')[0] === cat).reduce((s, i) => s + i.amount, 0)),
       backgroundColor: colorForIndex(idx),
       stack: 'spend'
     }));
@@ -569,10 +643,55 @@ function renderSpendChart() {
         y: { stacked: true, ticks: { color: '#9aa4b2' }, grid: { color: '#2a303a' } }
       },
       plugins: {
-        legend: { labels: { color: '#e8eaed', boxWidth: 12, font: { size: 11 } } }
+        legend: { labels: { color: '#e8eaed', boxWidth: 12, font: { size: 11 } } },
+        tooltip: {
+          callbacks: {
+            afterBody: (items) => {
+              if (drillState.level !== 'sub' || !items.length) return [];
+              const sub = chartInstance.data.datasets[items[0].datasetIndex].label;
+              const month = chartInstance.data.labels[items[0].dataIndex];
+              const cat = drillState.category;
+              const totals = {};
+              rangeFilteredDataset()
+                .filter(i => i.month === month && i.category === cat + ' > ' + sub)
+                .forEach(i => { totals[i.merchant] = (totals[i.merchant] || 0) + i.amount; });
+              const top3 = Object.entries(totals).sort((a, b) => b[1] - a[1]).slice(0, 3);
+              if (!top3.length) return [];
+              return ['', 'Top merchants:', ...top3.map(([m, t]) => `  ${m}: ${Math.round(t).toLocaleString()} kr`)];
+            }
+          }
+        }
       }
     }
   });
+
+  renderMerchantSummary(rows, drillState.category);
+}
+
+function renderMerchantSummary(rows, cat) {
+  const wrap = document.getElementById('merchant-summary-wrap');
+  if (drillState.level !== 'merchant') {
+    wrap.innerHTML = '';
+    return;
+  }
+  const totals = {};
+  const counts = {};
+  rows.filter(i => i.category.split(' > ')[0] === cat).forEach(i => {
+    totals[i.merchant] = (totals[i.merchant] || 0) + i.amount;
+    counts[i.merchant] = (counts[i.merchant] || 0) + 1;
+  });
+  const sorted = Object.entries(totals).sort((a, b) => b[1] - a[1]);
+
+  let html = `<table><thead><tr><th>Merchant</th><th>Transactions</th><th>Total</th></tr></thead><tbody>`;
+  sorted.forEach(([merch, total]) => {
+    html += `<tr>
+      <td>${escapeHtml(merch)}</td>
+      <td>${counts[merch]}</td>
+      <td>${Math.round(total).toLocaleString()} kr</td>
+    </tr>`;
+  });
+  html += `</tbody></table>`;
+  wrap.innerHTML = html;
 }
 
 function handleChartClick(evt, elements) {
@@ -605,12 +724,13 @@ function colorForIndex(i) {
 // SAVINGS CHART (spend by card + salary-minus-spend line)
 // ============================================================
 function renderSavingsChart() {
-  const months = sortedMonthList();
-  const cards = [...new Set(dataset.map(i => i.card))];
+  const months = visibleMonths();
+  const rows = rangeFilteredDataset();
+  const cards = [...new Set(rows.map(i => i.card))];
 
   const cardDatasets = cards.map((card, idx) => ({
     label: card,
-    data: months.map(m => dataset.filter(i => i.month === m && i.card === card && i.category !== 'Excluded').reduce((s, i) => s + i.amount, 0)),
+    data: months.map(m => rows.filter(i => i.month === m && i.card === card && i.category !== 'Excluded').reduce((s, i) => s + i.amount, 0)),
     backgroundColor: colorForIndex(idx),
     stack: 'spend',
     type: 'bar',
@@ -618,11 +738,11 @@ function renderSavingsChart() {
   }));
 
   const salaryByMonth = {};
-  dataset.filter(i => i.merchant === 'Lön (salary)').forEach(i => { salaryByMonth[i.month] = i.amount; });
+  rows.filter(i => i.merchant === 'Lön (salary)').forEach(i => { salaryByMonth[i.month] = i.amount; });
 
   const savingsData = months.map(m => {
     if (!(m in salaryByMonth)) return null;
-    const spend = dataset.filter(i => i.month === m && i.category !== 'Excluded').reduce((s, i) => s + i.amount, 0);
+    const spend = rows.filter(i => i.month === m && i.category !== 'Excluded').reduce((s, i) => s + i.amount, 0);
     return salaryByMonth[m] - spend;
   });
 
@@ -661,50 +781,93 @@ function renderSavingsChart() {
 // TRANSACTIONS BROWSER
 // ============================================================
 function renderTransactionsBrowser() {
-  const monthSel = document.getElementById('txn-month-filter');
   const catSel = document.getElementById('txn-category-filter');
-
-  const months = sortedMonthList();
-  monthSel.innerHTML = '<option value="">All months</option>' + months.map(m => `<option value="${m}">${m}</option>`).join('');
 
   const topCategories = [...new Set(dataset.map(i => i.category.split(' > ')[0]))].sort();
   catSel.innerHTML = '<option value="">All categories</option>' + topCategories.map(c => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join('');
 
-  monthSel.onchange = drawTransactionsTable;
   catSel.onchange = drawTransactionsTable;
   drawTransactionsTable();
 }
 
 function drawTransactionsTable() {
-  const month = document.getElementById('txn-month-filter').value;
   const cat = document.getElementById('txn-category-filter').value;
 
-  let rows = dataset;
-  if (month) rows = rows.filter(i => i.month === month);
+  let rows = rangeFilteredDataset();
   if (cat) rows = rows.filter(i => i.category.split(' > ')[0] === cat);
 
-  rows = rows.slice().sort((a, b) => b.txn_date.localeCompare(a.txn_date));
+  const wrap = document.getElementById('txn-table-wrap');
+  if (!rows.length) {
+    wrap.innerHTML = `<div style="margin: 10px 0; color: var(--text-dim); font-size: 13px;">No transactions in this range.</div>`;
+    return;
+  }
 
-  const total = rows.reduce((s, i) => s + i.amount, 0);
-  const capped = rows.slice(0, 300); // keep the DOM light; filters narrow it down further
+  const grandTotal = rows.reduce((s, i) => s + i.amount, 0);
+
+  const byTop = {};
+  rows.forEach(r => {
+    const top = r.category.split(' > ')[0];
+    (byTop[top] = byTop[top] || []).push(r);
+  });
+  const topEntries = Object.entries(byTop).sort((a, b) =>
+    b[1].reduce((s, i) => s + i.amount, 0) - a[1].reduce((s, i) => s + i.amount, 0)
+  );
 
   let html = `<div style="margin: 10px 0; color: var(--text-dim); font-size: 13px;">
-    ${rows.length.toLocaleString()} transactions &middot; ${Math.round(total).toLocaleString()} kr total
-    ${rows.length > 300 ? ' &middot; showing most recent 300 — narrow with the filters above' : ''}
+    ${rows.length.toLocaleString()} transactions &middot; ${Math.round(grandTotal).toLocaleString()} kr total
   </div>`;
-  html += `<table><thead><tr><th>Date</th><th>Merchant</th><th>Amount</th><th>Category</th><th>Card</th></tr></thead><tbody>`;
-  capped.forEach(r => {
+  topEntries.forEach(([top, topRows]) => { html += renderCategoryGroup(top, topRows, grandTotal); });
+
+  wrap.innerHTML = html;
+}
+
+function groupMeta(rows, grandTotal) {
+  const subtotal = rows.reduce((s, i) => s + i.amount, 0);
+  const pct = grandTotal ? (subtotal / grandTotal * 100).toFixed(1) : '0.0';
+  return `${rows.length.toLocaleString()} txn${rows.length === 1 ? '' : 's'} &middot; ${pct}% &middot; ${Math.round(subtotal).toLocaleString()} kr`;
+}
+
+function renderCategoryGroup(top, topRows, grandTotal) {
+  const bySub = {};
+  let hasSubs = false;
+  topRows.forEach(r => {
+    const sub = r.category.split(' > ')[1];
+    if (sub) { hasSubs = true; (bySub[sub] = bySub[sub] || []).push(r); }
+  });
+
+  let inner;
+  if (hasSubs) {
+    const subEntries = Object.entries(bySub).sort((a, b) =>
+      b[1].reduce((s, i) => s + i.amount, 0) - a[1].reduce((s, i) => s + i.amount, 0)
+    );
+    inner = subEntries.map(([sub, subRows]) => `
+      <details class="cat-group sub-group">
+        <summary><span><span class="caret">&#9656;</span> <span class="name">${escapeHtml(sub)}</span></span><span class="meta">${groupMeta(subRows, grandTotal)}</span></summary>
+        ${transactionsTableHtml(subRows)}
+      </details>`).join('');
+  } else {
+    inner = transactionsTableHtml(topRows);
+  }
+
+  return `<details class="cat-group">
+    <summary><span><span class="caret">&#9656;</span> <span class="name">${escapeHtml(top)}</span></span><span class="meta">${groupMeta(topRows, grandTotal)}</span></summary>
+    ${inner}
+  </details>`;
+}
+
+function transactionsTableHtml(rows) {
+  const sorted = rows.slice().sort((a, b) => b.txn_date.localeCompare(a.txn_date));
+  let html = `<table><thead><tr><th>Date</th><th>Merchant</th><th>Amount</th><th>Card</th></tr></thead><tbody>`;
+  sorted.forEach(r => {
     html += `<tr>
       <td>${r.txn_date}</td>
       <td>${escapeHtml(r.merchant)}</td>
       <td>${r.amount.toFixed(2)}</td>
-      <td>${escapeHtml(r.category)}</td>
       <td>${escapeHtml(r.card)}</td>
     </tr>`;
   });
   html += `</tbody></table>`;
-
-  document.getElementById('txn-table-wrap').innerHTML = html;
+  return html;
 }
 
 // ============================================================
