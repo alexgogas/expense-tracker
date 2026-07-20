@@ -341,13 +341,19 @@ function setStatus(msg) {
 // ============================================================
 let pickerLoaded = false;
 
+// Set right before any user-initiated (button click) sign-in attempt, so the shared token
+// client callback below knows whether a failure should be shown to the user, or was just the
+// automatic silent attempt on page load quietly not panning out (expected for first-time
+// visitors, or after a real sign-out).
+let interactiveSignInRequested = false;
+
 window.onload = () => {
   tokenClient = google.accounts.oauth2.initTokenClient({
     client_id: CLIENT_ID,
     scope: SCOPES,
     callback: async (resp) => {
       if (resp.error) {
-        showToast('Sign-in failed: ' + resp.error, 'error');
+        if (interactiveSignInRequested) showToast('Sign-in failed: ' + resp.error, 'error');
         return;
       }
       accessToken = resp.access_token;
@@ -358,6 +364,7 @@ window.onload = () => {
   gapi.load('picker', () => { pickerLoaded = true; });
 
   document.getElementById('signin-btn').addEventListener('click', () => {
+    interactiveSignInRequested = true;
     tokenClient.requestAccessToken();
   });
   document.getElementById('signout-btn').addEventListener('click', signOut);
@@ -373,6 +380,12 @@ window.onload = () => {
   document.getElementById('add-category-btn').addEventListener('click', addCategory);
 
   setupImportUI();
+
+  // Try a silent, non-interactive sign-in first, so a returning visitor in the same browser
+  // (already granted this app access previously) doesn't have to click "Sign in with Google" on
+  // every page load. prompt:'' means Google shows no UI at all if it can't do this silently —
+  // it just fails quietly here and the button stays for a normal manual sign-in.
+  tokenClient.requestAccessToken({ prompt: '' });
 };
 
 window.addEventListener('beforeunload', (e) => {
@@ -1030,6 +1043,11 @@ function legendDoubleClickHandler() {
   return (evt, legendItem, legend) => {
     const chart = legend.chart;
     const index = legendItem.datasetIndex;
+    // Trend/Average's *values* only depend on which real (stack:'spend') series are visible —
+    // showing/hiding/isolating Trend or Average itself must never feed back into recomputing
+    // them, or isolating Trend/Average (which, like isolating anything else, hides every other
+    // dataset including the real bars) would zero them out against their own now-hidden bars.
+    const clickedIsSpendSeries = chart.data.datasets[index].stack === 'spend';
 
     if (pendingTimer !== null && pendingIndex === index) {
       // Second click on the same item within the window: it's a double-click. Cancel the
@@ -1044,7 +1062,7 @@ function legendDoubleClickHandler() {
         if (onlyThisVisible || i === index) chart.show(i);
         else chart.hide(i);
       });
-      recomputeTrendAndAverage(chart);
+      if (clickedIsSpendSeries) recomputeTrendAndAverage(chart);
       return;
     }
 
@@ -1058,7 +1076,7 @@ function legendDoubleClickHandler() {
       pendingIndex = null;
       if (chart.isDatasetVisible(index)) chart.hide(index);
       else chart.show(index);
-      recomputeTrendAndAverage(chart);
+      if (clickedIsSpendSeries) recomputeTrendAndAverage(chart);
     }, DELAY);
   };
 }
