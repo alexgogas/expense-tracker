@@ -249,6 +249,11 @@
 // Add this page's URL as an Authorized JavaScript origin
 // ============================================================
 const CLIENT_ID = '312075890401-qh3mmofr68m9baujmbiv2uqu9ft8n8af.apps.googleusercontent.com';
+// Cloud project number (the numeric prefix of CLIENT_ID). PickerBuilder.setAppId() needs this to
+// link a Picker file selection to this app's drive.file grant — without it, selecting a file in
+// the Picker does NOT actually register write access, and Drive keeps returning
+// "appNotAuthorizedToFile" even after the user picks the file.
+const APP_ID = CLIENT_ID.split('-')[0];
 const API_KEY = 'AIzaSyC6c4cHh7sdor57Eqn22bmMy2_6RVyWTvs'; // Restricted to Google Picker API + your GitHub Pages origin
 const DRIVE_FOLDER_NAME = 'Expense Tracker App'; // shown as a hint in the picker dialog title only
 const SCOPES = 'https://www.googleapis.com/auth/drive.file';
@@ -394,6 +399,7 @@ function openFolderPicker() {
     .addView(view)
     .setOAuthToken(accessToken)
     .setDeveloperKey(API_KEY)
+    .setAppId(APP_ID)
     .setTitle('Select your ' + DRIVE_FOLDER_NAME + ' folder')
     .setCallback(onFolderPicked)
     .build();
@@ -437,6 +443,7 @@ function openFileAccessPicker() {
     .addView(view)
     .setOAuthToken(accessToken)
     .setDeveloperKey(API_KEY)
+    .setAppId(APP_ID)
     .enableFeature(google.picker.Feature.MULTISELECT_ENABLED)
     .setTitle('Select all 4 data files to grant write access (cmd/ctrl-click for multiple)')
     .setCallback(onFileAccessPicked)
