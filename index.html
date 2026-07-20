@@ -1240,12 +1240,18 @@ async function saveImport() {
     card: r.card
   }));
 
-  dataset = dataset.concat(merged);
-  overrides = newOverrides;
+  // Compute the merged state locally first; don't touch the live dataset/overrides
+  // until the Drive write actually succeeds, so a failed save doesn't leave the app
+  // pointing at unsaved local data (which would also duplicate rows on retry) while
+  // the charts silently go stale.
+  const nextDataset = dataset.concat(merged);
+  const nextOverrides = newOverrides;
 
   try {
-    await updateFileContent(fileIds['canonical_dataset.json'], JSON.stringify(dataset));
-    await updateFileContent(fileIds['canonical_overrides.json'], JSON.stringify(overrides, null, 2));
+    await updateFileContent(fileIds['canonical_dataset.json'], JSON.stringify(nextDataset));
+    await updateFileContent(fileIds['canonical_overrides.json'], JSON.stringify(nextOverrides, null, 2));
+    dataset = nextDataset;
+    overrides = nextOverrides;
     setStatus(`Saved. ${merged.length} transactions added.`);
     showToast(`Saved ${merged.length} transactions to Drive.`, 'success');
     pendingImport = null;
@@ -1253,7 +1259,10 @@ async function saveImport() {
     renderOverview();
   } catch (err) {
     setStatus('');
-    showToast('Save failed: ' + err.message, 'error');
+    const hint = err.message && err.message.includes('401')
+      ? ' Your session may have expired — try signing in again.'
+      : '';
+    showToast('Save failed: ' + err.message + hint, 'error');
     console.error(err);
   }
 }
