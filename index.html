@@ -564,7 +564,8 @@ function categoryHasSubs(topCategory) {
 
 function renderOverview() {
   drillState = { level: 'top', category: null };
-  const total = dataset.reduce((s, i) => s + i.amount, 0);
+  const counted = dataset.filter(i => i.category !== 'Excluded');
+  const total = counted.reduce((s, i) => s + i.amount, 0);
   const months = sortedMonthList();
   rangeFilter = { from: months[0] || null, to: months[months.length - 1] || null };
   renderRangeFilter();
@@ -572,7 +573,7 @@ function renderOverview() {
   const statRow = document.getElementById('stat-row');
   statRow.innerHTML = '';
   const stats = [
-    { label: 'Transactions', value: dataset.length.toLocaleString() },
+    { label: 'Transactions', value: counted.length.toLocaleString() },
     { label: 'Total tracked', value: Math.round(total).toLocaleString() + ' kr' },
     { label: 'Months covered', value: months.length },
   ];
@@ -904,7 +905,9 @@ function drawTransactionsTable() {
     return;
   }
 
-  const grandTotal = rows.reduce((s, i) => s + i.amount, 0);
+  // Excluded transactions (salary deposits, transfers, etc.) don't count toward any total or percentage.
+  const countedRows = rows.filter(i => i.category !== 'Excluded');
+  const grandTotal = countedRows.reduce((s, i) => s + i.amount, 0);
 
   const byTop = {};
   rows.forEach(r => {
@@ -920,23 +923,26 @@ function drawTransactionsTable() {
 
   const summary = document.createElement('div');
   summary.style.cssText = 'margin: 10px 0; color: var(--text-dim); font-size: 13px;';
-  summary.textContent = `${rows.length.toLocaleString()} transactions · ${Math.round(grandTotal).toLocaleString()} kr total`;
+  summary.textContent = `${countedRows.length.toLocaleString()} transactions · ${Math.round(grandTotal).toLocaleString()} kr total`;
   wrap.appendChild(summary);
 
   topEntries.forEach(([top, topRows]) => { wrap.appendChild(renderCategoryGroup(top, topRows, grandTotal)); });
 }
 
-function groupMeta(rows, grandTotal) {
+function groupMeta(rows, grandTotal, isExcluded) {
   const subtotal = rows.reduce((s, i) => s + i.amount, 0);
+  const countTxt = `${rows.length.toLocaleString()} txn${rows.length === 1 ? '' : 's'}`;
+  const amountTxt = `${Math.round(subtotal).toLocaleString()} kr`;
+  if (isExcluded) return `${countTxt} &middot; excluded from totals &middot; ${amountTxt}`;
   const pct = grandTotal ? (subtotal / grandTotal * 100).toFixed(1) : '0.0';
-  return `${rows.length.toLocaleString()} txn${rows.length === 1 ? '' : 's'} &middot; ${pct}% &middot; ${Math.round(subtotal).toLocaleString()} kr`;
+  return `${countTxt} &middot; ${pct}% &middot; ${amountTxt}`;
 }
 
 function renderCategoryGroup(top, topRows, grandTotal) {
   const details = document.createElement('details');
   details.className = 'cat-group';
   const summary = document.createElement('summary');
-  summary.innerHTML = `<span><span class="caret">&#9656;</span> <span class="name">${escapeHtml(top)}</span></span><span class="meta">${groupMeta(topRows, grandTotal)}</span>`;
+  summary.innerHTML = `<span><span class="caret">&#9656;</span> <span class="name">${escapeHtml(top)}</span></span><span class="meta">${groupMeta(topRows, grandTotal, top === 'Excluded')}</span>`;
   details.appendChild(summary);
 
   const bySub = {};
@@ -1022,8 +1028,27 @@ async function handleFile(file) {
     }
 
     const { results, unmatched } = processImport(rawRows, selectedFormat, aliases, overrides, learnedLookup);
-    pendingImport = { results, unmatched, format: selectedFormat };
-    renderImportResults(results, unmatched);
+
+    // Skip transactions that already exist in the dataset, or repeat within this same file
+    // (same date, merchant, amount and card), so re-importing an overlapping statement is a no-op.
+    const existingKeys = new Set(dataset.map(transactionKey));
+    const seenInBatch = new Set();
+    const deduped = [];
+    let duplicateCount = 0;
+    results.forEach(r => {
+      const key = transactionKey(r);
+      if (existingKeys.has(key) || seenInBatch.has(key)) {
+        duplicateCount++;
+        return;
+      }
+      seenInBatch.add(key);
+      deduped.push(r);
+    });
+    const dedupedSet = new Set(deduped);
+    const dedupedUnmatched = unmatched.filter(r => dedupedSet.has(r));
+
+    pendingImport = { results: deduped, unmatched: dedupedUnmatched, format: selectedFormat };
+    renderImportResults(deduped, dedupedUnmatched, duplicateCount);
     setStatus('');
   } catch (err) {
     setStatus('');
@@ -1123,14 +1148,15 @@ function parsePersonkontoCSV(file) {
   });
 }
 
-function renderImportResults(results, unmatched) {
+function renderImportResults(results, unmatched, duplicateCount) {
   const container = document.getElementById('import-results');
   const total = results.reduce((s, r) => s + r.amount, 0);
 
   let html = `<div class="stat-row" style="margin-top:16px;">
-    <div class="stat"><div class="label">Parsed</div><div class="value">${results.length}</div></div>
+    <div class="stat"><div class="label">New</div><div class="value">${results.length}</div></div>
     <div class="stat"><div class="label">Total</div><div class="value">${Math.round(total).toLocaleString()} kr</div></div>
     <div class="stat"><div class="label">Needs review</div><div class="value">${unmatched.length}</div></div>
+    <div class="stat"><div class="label">Duplicates skipped</div><div class="value">${duplicateCount || 0}</div></div>
   </div>`;
 
   if (unmatched.length) {
@@ -1146,14 +1172,23 @@ function renderImportResults(results, unmatched) {
     html += `</tbody></table>`;
   }
 
-  html += `<div style="margin-top:16px; display:flex; gap:10px;">
-    <button class="primary" id="save-import-btn">Save to Drive</button>
-    <button id="discard-import-btn">Discard</button>
-  </div>`;
+  if (results.length) {
+    html += `<div style="margin-top:16px; display:flex; gap:10px;">
+      <button class="primary" id="save-import-btn">Save to Drive</button>
+      <button id="discard-import-btn">Discard</button>
+    </div>`;
+  } else {
+    html += `<div style="margin-top:16px; color: var(--text-dim); font-size: 13px;">
+      Every transaction in this file was already in your data — nothing new to save.
+    </div>
+    <div style="margin-top:12px;"><button id="discard-import-btn">Dismiss</button></div>`;
+  }
 
   container.innerHTML = html;
 
-  document.getElementById('save-import-btn').addEventListener('click', saveImport);
+  if (results.length) {
+    document.getElementById('save-import-btn').addEventListener('click', saveImport);
+  }
   document.getElementById('discard-import-btn').addEventListener('click', () => {
     pendingImport = null;
     container.innerHTML = '';
@@ -1170,6 +1205,10 @@ function escapeHtml(str) {
   const div = document.createElement('div');
   div.textContent = str;
   return div.innerHTML;
+}
+
+function transactionKey(t) {
+  return [t.txn_date, t.merchant.trim().toLowerCase(), t.amount.toFixed(2), t.card].join('|');
 }
 
 async function saveImport() {
