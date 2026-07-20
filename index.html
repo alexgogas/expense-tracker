@@ -613,6 +613,9 @@ async function loadAllData() {
     setStatus('Loading transactions…');
     dataset = JSON.parse(await downloadFile(fileIds['canonical_dataset.json']));
 
+    const invalidCount = dataset.filter(t => !isValidTransaction(t)).length;
+    if (invalidCount) dataset = dataset.filter(isValidTransaction);
+
     setStatus('Loading category rules…');
     aliases = JSON.parse(await downloadFile(fileIds['canonical_aliases.json']));
     overrides = JSON.parse(await downloadFile(fileIds['canonical_overrides.json']));
@@ -633,6 +636,16 @@ async function loadAllData() {
 
     setStatus(`Loaded ${dataset.length} transactions.`);
     renderOverview();
+
+    if (invalidCount) {
+      // renderOverview() above resets unsavedChanges — mark it after, not before, or it's wiped out.
+      markUnsaved();
+      showToast(
+        `Removed ${invalidCount} corrupted transaction${invalidCount === 1 ? '' : 's'} found in your data ` +
+        `(e.g. a bank export's summary row that got imported by mistake). Click "Save to Drive" to make this permanent.`,
+        'error'
+      );
+    }
   } catch (err) {
     setStatus('');
     if (err.message && err.message.includes('404')) {
@@ -840,7 +853,11 @@ function renderSpendChart() {
 
   // Trend line: total across whatever's currently plotted (all top categories, or the
   // subcategories/merchants of the drilled-in one), overlaid on top of the stacked bars.
+  // Average: the flat mean of that same trend across the visible buckets. Both start out
+  // reflecting every series, and get recomputed by legendDoubleClickHandler whenever the user
+  // hides/isolates series via the legend, so they always track what's actually showing.
   const trendData = buckets.map((b, idx) => datasets.reduce((s, d) => s + (d.data[idx] || 0), 0));
+  const avgValue = trendData.reduce((s, v) => s + v, 0) / (trendData.length || 1);
   datasets = [...datasets, {
     label: 'Trend',
     data: trendData,
@@ -850,6 +867,16 @@ function renderSpendChart() {
     borderWidth: 2,
     pointRadius: 3,
     tension: 0.25,
+    fill: false
+  }, {
+    label: 'Average',
+    data: buckets.map(() => avgValue),
+    type: 'line',
+    borderColor: '#ffb454',
+    backgroundColor: '#ffb454',
+    borderWidth: 1.5,
+    borderDash: [6, 4],
+    pointRadius: 0,
     fill: false
   }];
 
@@ -969,6 +996,30 @@ function colorForIndex(i) {
 // double-click isolates just that series (hides all others), and double-clicking the sole
 // remaining visible series restores everyone. Returns a fresh handler (own timing state) each
 // call — invoke once per Chart construction.
+// Recomputes the "Trend"/"Average" line datasets (if present — a no-op on charts without them,
+// e.g. the savings chart) from whichever stack:'spend' series are currently visible. Chart.js's
+// show()/hide() only toggle a dataset's own visibility; they don't touch other datasets, so
+// without this the trend/average lines would keep reflecting every series even after the user
+// hides or isolates some of them via the legend.
+function recomputeTrendAndAverage(chart) {
+  const trendDs = chart.data.datasets.find(d => d.label === 'Trend');
+  const avgDs = chart.data.datasets.find(d => d.label === 'Average');
+  if (!trendDs && !avgDs) return;
+
+  const bucketCount = chart.data.labels.length;
+  const spendData = Array.from({ length: bucketCount }, (_, idx) =>
+    chart.data.datasets.reduce((s, d, i) => {
+      if (d.stack !== 'spend' || !chart.isDatasetVisible(i)) return s;
+      return s + (d.data[idx] || 0);
+    }, 0)
+  );
+  const avgValue = spendData.reduce((s, v) => s + v, 0) / (bucketCount || 1);
+
+  if (trendDs) trendDs.data = spendData;
+  if (avgDs) avgDs.data = spendData.map(() => avgValue);
+  chart.update();
+}
+
 function legendDoubleClickHandler() {
   const DELAY = 300; // ms — standard double-click window
   let pendingIndex = null;
@@ -991,6 +1042,7 @@ function legendDoubleClickHandler() {
         if (onlyThisVisible || i === index) chart.show(i);
         else chart.hide(i);
       });
+      recomputeTrendAndAverage(chart);
       return;
     }
 
@@ -1004,6 +1056,7 @@ function legendDoubleClickHandler() {
       pendingIndex = null;
       if (chart.isDatasetVisible(index)) chart.hide(index);
       else chart.show(index);
+      recomputeTrendAndAverage(chart);
     }, DELAY);
   };
 }
@@ -1218,16 +1271,21 @@ function renderCategoryGroup(top, topRows, grandTotal, monthCount) {
   details.appendChild(summary);
 
   const bySub = {};
-  let hasSubs = false;
+  const noSubRows = [];
   topRows.forEach(r => {
     const sub = r.category.split(' > ')[1];
-    if (sub) { hasSubs = true; (bySub[sub] = bySub[sub] || []).push(r); }
+    if (sub) (bySub[sub] = bySub[sub] || []).push(r);
+    else noSubRows.push(r);
   });
+  const hasSubs = Object.keys(bySub).length > 0;
 
   if (hasSubs) {
     const subEntries = Object.entries(bySub).sort((a, b) =>
       b[1].reduce((s, i) => s + i.amount, 0) - a[1].reduce((s, i) => s + i.amount, 0)
     );
+    // Rows filed directly under the top category (no subcategory) still need somewhere to
+    // render — they used to just vanish here, counted in the header total but shown nowhere.
+    if (noSubRows.length) subEntries.push(['(No subcategory)', noSubRows]);
     subEntries.forEach(([sub, subRows]) => {
       const subDetails = document.createElement('details');
       subDetails.className = 'cat-group sub-group';
@@ -1707,6 +1765,17 @@ function escapeHtml(str) {
 
 function transactionKey(t) {
   return [t.txn_date, t.merchant.trim().toLowerCase(), t.amount.toFixed(2), t.card].join('|');
+}
+
+// Guards against corrupted rows already sitting in canonical_dataset.json from before
+// processImport started rejecting them (isValidParsedRow) — e.g. a bank export's summary/footer
+// row that got imported as if it were a real transaction. Checked on load, not just on import.
+function isValidTransaction(t) {
+  return !!(t &&
+    typeof t.txn_date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(t.txn_date) &&
+    t.merchant && String(t.merchant).trim().length > 0 &&
+    typeof t.amount === 'number' && isFinite(t.amount) &&
+    t.category && typeof t.category === 'string');
 }
 
 async function saveImport() {
