@@ -862,7 +862,8 @@ function renderSpendChart() {
     label: 'Trend',
     data: trendData,
     type: 'line',
-    borderColor: '#e8eaed',
+    stack: 'trend-line', // own stack group — must NOT share one with Average or the bars,
+    borderColor: '#e8eaed',                     // or Chart.js renders it at their cumulative sum
     backgroundColor: '#e8eaed',
     borderWidth: 2,
     pointRadius: 3,
@@ -872,6 +873,7 @@ function renderSpendChart() {
     label: 'Average',
     data: buckets.map(() => avgValue),
     type: 'line',
+    stack: 'average-line', // own stack group, separate from Trend's
     borderColor: '#ffb454',
     backgroundColor: '#ffb454',
     borderWidth: 1.5,
@@ -1219,6 +1221,16 @@ function drawTransactionsTable() {
   if (card) rows = rows.filter(i => i.card === card);
 
   const wrap = document.getElementById('txn-table-wrap');
+
+  // This table's category/subcategory <details> are torn down and rebuilt on every re-render
+  // (recategorizing a transaction, changing a filter, etc.), and a freshly-created <details> is
+  // always closed — so without this, whatever the user had expanded would silently collapse on
+  // every single edit. Capture what's open now (keyed by category path) and restore it below.
+  const openKeys = new Set();
+  wrap.querySelectorAll('details.cat-group[open]').forEach(d => {
+    if (d.dataset.groupKey) openKeys.add(d.dataset.groupKey);
+  });
+
   wrap.innerHTML = '';
   if (!rows.length) {
     const empty = document.createElement('div');
@@ -1250,7 +1262,7 @@ function drawTransactionsTable() {
   wrap.appendChild(summary);
 
   const monthCount = Math.max(visibleMonths().length, 1);
-  topEntries.forEach(([top, topRows]) => { wrap.appendChild(renderCategoryGroup(top, topRows, grandTotal, monthCount)); });
+  topEntries.forEach(([top, topRows]) => { wrap.appendChild(renderCategoryGroup(top, topRows, grandTotal, monthCount, openKeys)); });
 }
 
 function groupMeta(rows, grandTotal, isExcluded, monthCount) {
@@ -1263,9 +1275,11 @@ function groupMeta(rows, grandTotal, isExcluded, monthCount) {
   return `${countTxt} &middot; ${pct}% &middot; ${amountTxt} &middot; ${avgTxt}`;
 }
 
-function renderCategoryGroup(top, topRows, grandTotal, monthCount) {
+function renderCategoryGroup(top, topRows, grandTotal, monthCount, openKeys) {
   const details = document.createElement('details');
   details.className = 'cat-group';
+  details.dataset.groupKey = top;
+  if (openKeys && openKeys.has(top)) details.open = true;
   const summary = document.createElement('summary');
   summary.innerHTML = `<span><span class="caret">&#9656;</span> <span class="name">${escapeHtml(top)}</span></span><span class="meta">${groupMeta(topRows, grandTotal, top === 'Excluded', monthCount)}</span>`;
   details.appendChild(summary);
@@ -1289,6 +1303,9 @@ function renderCategoryGroup(top, topRows, grandTotal, monthCount) {
     subEntries.forEach(([sub, subRows]) => {
       const subDetails = document.createElement('details');
       subDetails.className = 'cat-group sub-group';
+      const subKey = top + ' > ' + sub;
+      subDetails.dataset.groupKey = subKey;
+      if (openKeys && openKeys.has(subKey)) subDetails.open = true;
       const subSummary = document.createElement('summary');
       subSummary.innerHTML = `<span><span class="caret">&#9656;</span> <span class="name">${escapeHtml(sub)}</span></span><span class="meta">${groupMeta(subRows, grandTotal, false, monthCount)}</span>`;
       subDetails.appendChild(subSummary);
