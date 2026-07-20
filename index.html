@@ -139,6 +139,16 @@
     font-size: 13px; color: var(--warn);
   }
 
+  .cat-tree-row { border: 1px solid var(--border); border-radius: 8px; margin-bottom: 8px; overflow: hidden; }
+  .cat-tree-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 12px; background: var(--panel-2); }
+  .cat-tree-name { font-weight: 600; font-size: 13px; }
+  .cat-tree-actions { display: flex; gap: 6px; flex-shrink: 0; }
+  .cat-tree-actions button { padding: 4px 10px; font-size: 12px; }
+  .cat-tree-subs { padding: 4px 12px 8px 28px; }
+  .cat-tree-sub-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 0; font-size: 13px; color: var(--text-dim); border-bottom: 1px solid var(--border); }
+  .cat-tree-sub-row:last-child { border-bottom: none; }
+  .cat-tree-sub-row .cat-tree-actions button { padding: 2px 8px; font-size: 11px; }
+
   details.cat-group { border: 1px solid var(--border); border-radius: 8px; margin-bottom: 8px; overflow: hidden; }
   details.cat-group > summary {
     cursor: pointer; padding: 10px 12px; background: var(--panel-2);
@@ -236,6 +246,18 @@
     </div>
 
     <div class="card">
+      <h2>Categories</h2>
+      <p style="color: var(--text-dim); font-size: 13px; margin: 0 0 14px;">
+        Renaming a category or subcategory updates every transaction using it. A category or
+        subcategory can't be deleted while transactions still use it — recategorize them first.
+      </p>
+      <div id="category-tree-wrap"></div>
+      <div style="margin-top: 14px;">
+        <button id="add-category-btn" class="btn-sm">+ Add category</button>
+      </div>
+    </div>
+
+    <div class="card">
       <h2>Import new transactions</h2>
       <div class="format-row" id="format-row">
         <div class="format-pill active" data-format="eurobonus">SAS EuroBonus (.xlsx)</div>
@@ -285,6 +307,7 @@ let dataset = [];
 let aliases = {};
 let overrides = {};
 let learnedLookup = {};
+let categoryTree = []; // live, user-editable taxonomy — see loadAllData() and the Categories card
 let chartInstance = null;
 let selectedFormat = 'eurobonus';
 let pendingImport = null; // { results, unmatched, format }
@@ -333,7 +356,8 @@ window.onload = () => {
 
   document.getElementById('export-spend-chart-btn').addEventListener('click', () => downloadChartPNG(chartInstance, 'spend-chart.png'));
   document.getElementById('export-savings-chart-btn').addEventListener('click', () => downloadChartPNG(savingsChartInstance, 'savings-chart.png'));
-  document.getElementById('save-changes-btn').addEventListener('click', saveDatasetChanges);
+  document.getElementById('save-changes-btn').addEventListener('click', saveAllChanges);
+  document.getElementById('add-category-btn').addEventListener('click', addCategory);
 
   setupImportUI();
 };
@@ -524,6 +548,32 @@ async function updateFileContent(fId, textContent, mimeType) {
   return res.json();
 }
 
+// Files created by the app (as opposed to pre-existing files the user picked) automatically get
+// drive.file write access — no Picker "grant access" step needed, unlike updateFileContent above.
+async function createFileInFolder(name, textContent, mimeType) {
+  const boundary = 'expense_tracker_boundary';
+  const metadata = { name, parents: [folderId], mimeType: mimeType || 'application/json' };
+  const body =
+    `--${boundary}\r\nContent-Type: application/json\r\n\r\n${JSON.stringify(metadata)}\r\n` +
+    `--${boundary}\r\nContent-Type: ${metadata.mimeType}\r\n\r\n${textContent}\r\n` +
+    `--${boundary}--`;
+  const res = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', {
+    method: 'POST',
+    headers: {
+      Authorization: 'Bearer ' + accessToken,
+      'Content-Type': `multipart/related; boundary=${boundary}`
+    },
+    body
+  });
+  if (!res.ok) {
+    const errBody = await res.text();
+    throw new Error(`Drive create failed ${res.status}: ${errBody}`);
+  }
+  const data = await res.json();
+  fileIds[name] = data.id;
+  return data.id;
+}
+
 // ============================================================
 // LOAD DATA FROM DRIVE
 // ============================================================
@@ -554,6 +604,19 @@ async function loadAllData() {
     aliases = JSON.parse(await downloadFile(fileIds['canonical_aliases.json']));
     overrides = JSON.parse(await downloadFile(fileIds['canonical_overrides.json']));
     learnedLookup = JSON.parse(await downloadFile(fileIds['merchant_category_lookup.json']));
+
+    if (fileIds['category_tree.json']) {
+      categoryTree = JSON.parse(await downloadFile(fileIds['category_tree.json']));
+    } else {
+      // First time this folder's been used with category editing: seed from the built-in
+      // default and create the file now. App-created files get automatic write access.
+      categoryTree = JSON.parse(JSON.stringify(CATEGORY_TREE));
+      try {
+        await createFileInFolder('category_tree.json', JSON.stringify(categoryTree, null, 2));
+      } catch (e) {
+        console.error('Could not create category_tree.json yet — will retry on next save.', e);
+      }
+    }
 
     setStatus(`Loaded ${dataset.length} transactions.`);
     renderOverview();
@@ -636,8 +699,17 @@ function refreshViews() {
 }
 
 function categoryHasSubs(topCategory) {
-  const entry = (typeof CATEGORY_TREE !== 'undefined') ? CATEGORY_TREE.find(c => c.key === topCategory) : null;
-  return entry && entry.subs;
+  const entry = categoryTree.find(c => c.key === topCategory);
+  return entry && entry.subs && entry.subs.length > 0;
+}
+
+function leafCategories() {
+  const leaves = [];
+  categoryTree.forEach(cat => {
+    if (cat.subs && cat.subs.length) cat.subs.forEach(sub => leaves.push(cat.key + ' > ' + sub));
+    else leaves.push(cat.key);
+  });
+  return leaves;
 }
 
 function renderOverview() {
@@ -667,6 +739,7 @@ function renderOverview() {
   renderSpendChart();
   renderSavingsChart();
   renderTransactionsBrowser();
+  renderCategoriesUI();
 }
 
 function renderSpendChart() {
@@ -692,7 +765,7 @@ function renderSpendChart() {
     }));
   } else if (drillState.level === 'sub') {
     const cat = drillState.category;
-    const entry = CATEGORY_TREE.find(c => c.key === cat);
+    const entry = categoryTree.find(c => c.key === cat);
     const subs = entry.subs;
     datasets = subs.map((sub, idx) => ({
       label: sub,
@@ -790,7 +863,7 @@ function renderMerchantSummary(rows, cat) {
   } else if (drillState.level === 'sub') {
     // Top merchants per subcategory, aggregated across every month in the selected range
     // (not just whichever month is hovered in the chart tooltip).
-    const entry = CATEGORY_TREE.find(c => c.key === cat);
+    const entry = categoryTree.find(c => c.key === cat);
     entry.subs.forEach(sub => {
       const subRows = rows.filter(i => i.category === cat + ' > ' + sub);
       if (!subRows.length) return;
@@ -1065,7 +1138,7 @@ function transactionsTable(rows) {
       mount: (td, row) => {
         const sel = document.createElement('select');
         sel.className = 'cat-select';
-        const leaves = (typeof LEAF_CATEGORIES !== 'undefined') ? LEAF_CATEGORIES : [row.category];
+        const leaves = leafCategories();
         (leaves.includes(row.category) ? leaves : [row.category, ...leaves]).forEach(c => {
           const opt = document.createElement('option');
           opt.value = c;
@@ -1081,17 +1154,21 @@ function transactionsTable(rows) {
 }
 
 // ============================================================
-// RECATEGORIZE EXISTING TRANSACTIONS
+// RECATEGORIZE EXISTING TRANSACTIONS / EDIT CATEGORY TREE
 // ============================================================
 let unsavedChanges = false;
+
+function markUnsaved() {
+  unsavedChanges = true;
+  updateUnsavedBar();
+}
 
 function recategorizeTransaction(id, newCategory) {
   const txn = dataset.find(t => t.id === id);
   if (!txn || txn.category === newCategory) return;
   txn.category = newCategory;
   overrides[txn.merchant] = newCategory;
-  unsavedChanges = true;
-  updateUnsavedBar();
+  markUnsaved();
   refreshViews();
 }
 
@@ -1100,16 +1177,22 @@ function updateUnsavedBar() {
   bar.classList.toggle('hidden', !unsavedChanges);
   if (unsavedChanges) {
     document.getElementById('unsaved-changes-label').textContent =
-      'You have unsaved recategorizations. Reload the page to discard them.';
+      'You have unsaved changes. Reload the page to discard them.';
   }
 }
 
-async function saveDatasetChanges() {
+async function saveAllChanges() {
   if (!unsavedChanges) return;
   setStatus('Saving changes to Drive…');
   try {
     await updateFileContent(fileIds['canonical_dataset.json'], JSON.stringify(dataset));
     await updateFileContent(fileIds['canonical_overrides.json'], JSON.stringify(overrides, null, 2));
+    await updateFileContent(fileIds['merchant_category_lookup.json'], JSON.stringify(learnedLookup, null, 2));
+    if (fileIds['category_tree.json']) {
+      await updateFileContent(fileIds['category_tree.json'], JSON.stringify(categoryTree, null, 2));
+    } else {
+      await createFileInFolder('category_tree.json', JSON.stringify(categoryTree, null, 2));
+    }
     unsavedChanges = false;
     updateUnsavedBar();
     setStatus('Changes saved.');
@@ -1125,6 +1208,149 @@ async function saveDatasetChanges() {
     showToast('Save failed: ' + err.message + hint, 'error');
     console.error(err);
   }
+}
+
+// ============================================================
+// EDIT CATEGORY TREE
+// ============================================================
+// Renaming a category/subcategory migrates every matching category string across dataset,
+// overrides, and learnedLookup. prefixMatch also rewrites "oldCat > Sub" entries (used for
+// top-level renames); an exact-match rename (used for subcategories) does not.
+function migrateCategoryReferences(oldCat, newCat, prefixMatch) {
+  const matches = v => prefixMatch ? (v === oldCat || v.startsWith(oldCat + ' > ')) : v === oldCat;
+  const replace = v => (prefixMatch && v !== oldCat) ? newCat + v.slice(oldCat.length) : newCat;
+  dataset.forEach(t => { if (matches(t.category)) t.category = replace(t.category); });
+  Object.keys(overrides).forEach(m => { if (matches(overrides[m])) overrides[m] = replace(overrides[m]); });
+  Object.keys(learnedLookup).forEach(m => { if (matches(learnedLookup[m])) learnedLookup[m] = replace(learnedLookup[m]); });
+}
+
+function categoryInUseCount(cat, prefixMatch) {
+  const matches = v => prefixMatch ? (v === cat || v.startsWith(cat + ' > ')) : v === cat;
+  return dataset.filter(t => matches(t.category)).length;
+}
+
+function addCategory() {
+  const name = (prompt('New category name:') || '').trim();
+  if (!name) return;
+  if (categoryTree.some(c => c.key === name)) { showToast('That category already exists.', 'error'); return; }
+  categoryTree.push({ key: name, subs: null });
+  markUnsaved();
+  renderCategoriesUI();
+}
+
+function addSubcategory(topKey) {
+  const name = (prompt(`New subcategory of "${topKey}":`) || '').trim();
+  if (!name) return;
+  const entry = categoryTree.find(c => c.key === topKey);
+  if (!entry.subs) entry.subs = [];
+  if (entry.subs.includes(name)) { showToast('That subcategory already exists.', 'error'); return; }
+  entry.subs.push(name);
+  markUnsaved();
+  renderCategoriesUI();
+}
+
+function renameCategory(oldKey) {
+  const newKey = (prompt('Rename category:', oldKey) || '').trim();
+  if (!newKey || newKey === oldKey) return;
+  if (categoryTree.some(c => c.key === newKey)) { showToast('That category name is already in use.', 'error'); return; }
+  categoryTree.find(c => c.key === oldKey).key = newKey;
+  migrateCategoryReferences(oldKey, newKey, true);
+  markUnsaved();
+  renderCategoriesUI();
+  refreshViews();
+}
+
+function renameSubcategory(topKey, oldSub) {
+  const newSub = (prompt('Rename subcategory:', oldSub) || '').trim();
+  if (!newSub || newSub === oldSub) return;
+  const entry = categoryTree.find(c => c.key === topKey);
+  if (entry.subs.includes(newSub)) { showToast('That subcategory name is already in use.', 'error'); return; }
+  entry.subs = entry.subs.map(s => s === oldSub ? newSub : s);
+  migrateCategoryReferences(topKey + ' > ' + oldSub, topKey + ' > ' + newSub, false);
+  markUnsaved();
+  renderCategoriesUI();
+  refreshViews();
+}
+
+function deleteCategory(key) {
+  const count = categoryInUseCount(key, true);
+  if (count) {
+    showToast(`Can't delete "${key}" — ${count} transaction${count === 1 ? '' : 's'} still ${count === 1 ? 'uses' : 'use'} it. Recategorize ${count === 1 ? 'it' : 'them'} first.`, 'error');
+    return;
+  }
+  if (!confirm(`Delete category "${key}"?`)) return;
+  categoryTree = categoryTree.filter(c => c.key !== key);
+  markUnsaved();
+  renderCategoriesUI();
+}
+
+function deleteSubcategory(topKey, sub) {
+  const count = categoryInUseCount(topKey + ' > ' + sub, false);
+  if (count) {
+    showToast(`Can't delete "${sub}" — ${count} transaction${count === 1 ? '' : 's'} still ${count === 1 ? 'uses' : 'use'} it. Recategorize ${count === 1 ? 'it' : 'them'} first.`, 'error');
+    return;
+  }
+  if (!confirm(`Delete subcategory "${sub}" from "${topKey}"?`)) return;
+  const entry = categoryTree.find(c => c.key === topKey);
+  entry.subs = entry.subs.filter(s => s !== sub);
+  if (!entry.subs.length) entry.subs = null;
+  markUnsaved();
+  renderCategoriesUI();
+}
+
+function renderCategoriesUI() {
+  const wrap = document.getElementById('category-tree-wrap');
+  wrap.innerHTML = '';
+  categoryTree.forEach(entry => {
+    const row = document.createElement('div');
+    row.className = 'cat-tree-row';
+
+    const header = document.createElement('div');
+    header.className = 'cat-tree-header';
+    const nameSpan = document.createElement('span');
+    nameSpan.className = 'cat-tree-name';
+    nameSpan.textContent = entry.key;
+    const actions = document.createElement('span');
+    actions.className = 'cat-tree-actions';
+
+    const renameBtn = document.createElement('button');
+    renameBtn.textContent = 'Rename';
+    renameBtn.onclick = () => renameCategory(entry.key);
+    const addSubBtn = document.createElement('button');
+    addSubBtn.textContent = '+ Sub';
+    addSubBtn.onclick = () => addSubcategory(entry.key);
+    const deleteBtn = document.createElement('button');
+    deleteBtn.textContent = 'Delete';
+    deleteBtn.onclick = () => deleteCategory(entry.key);
+    actions.append(renameBtn, addSubBtn, deleteBtn);
+    header.append(nameSpan, actions);
+    row.appendChild(header);
+
+    if (entry.subs && entry.subs.length) {
+      const subList = document.createElement('div');
+      subList.className = 'cat-tree-subs';
+      entry.subs.forEach(sub => {
+        const subRow = document.createElement('div');
+        subRow.className = 'cat-tree-sub-row';
+        const subName = document.createElement('span');
+        subName.textContent = sub;
+        const subActions = document.createElement('span');
+        subActions.className = 'cat-tree-actions';
+        const subRenameBtn = document.createElement('button');
+        subRenameBtn.textContent = 'Rename';
+        subRenameBtn.onclick = () => renameSubcategory(entry.key, sub);
+        const subDeleteBtn = document.createElement('button');
+        subDeleteBtn.textContent = 'Delete';
+        subDeleteBtn.onclick = () => deleteSubcategory(entry.key, sub);
+        subActions.append(subRenameBtn, subDeleteBtn);
+        subRow.append(subName, subActions);
+        subList.appendChild(subRow);
+      });
+      row.appendChild(subList);
+    }
+
+    wrap.appendChild(row);
+  });
 }
 
 // ============================================================
@@ -1342,7 +1568,7 @@ function renderImportResults(results, unmatched, duplicateCount) {
 }
 
 function categorySelectHtml(unmatchedIdx) {
-  const leaves = (typeof LEAF_CATEGORIES !== 'undefined') ? LEAF_CATEGORIES : ['Other > Uncategorized'];
+  const leaves = leafCategories();
   let opts = leaves.map(c => `<option value="${escapeHtml(c)}"${c === 'Other > Uncategorized' ? ' selected' : ''}>${escapeHtml(c)}</option>`).join('');
   return `<select class="cat-select" data-unmatched-idx="${unmatchedIdx}">${opts}</select>`;
 }
