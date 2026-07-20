@@ -719,6 +719,21 @@ function renderSpendChart() {
     breadcrumbText = 'Showing top merchants of ' + cat;
   }
 
+  // Trend line: total across whatever's currently plotted (all top categories, or the
+  // subcategories/merchants of the drilled-in one), overlaid on top of the stacked bars.
+  const trendData = months.map((m, idx) => datasets.reduce((s, d) => s + (d.data[idx] || 0), 0));
+  datasets = [...datasets, {
+    label: 'Trend',
+    data: trendData,
+    type: 'line',
+    borderColor: '#e8eaed',
+    backgroundColor: '#e8eaed',
+    borderWidth: 2,
+    pointRadius: 3,
+    tension: 0.25,
+    fill: false
+  }];
+
   document.getElementById('breadcrumb-row').classList.toggle('hidden', !breadcrumbVisible);
   document.getElementById('breadcrumb-label').textContent = breadcrumbText;
 
@@ -741,7 +756,9 @@ function renderSpendChart() {
           callbacks: {
             afterBody: (items) => {
               if (drillState.level !== 'sub' || !items.length) return [];
-              const sub = chartInstance.data.datasets[items[0].datasetIndex].label;
+              const hoveredDataset = chartInstance.data.datasets[items[0].datasetIndex];
+              if (hoveredDataset.stack !== 'spend') return []; // skip the trend line itself
+              const sub = hoveredDataset.label;
               const month = chartInstance.data.labels[items[0].dataIndex];
               const cat = drillState.category;
               const totals = {};
@@ -1007,23 +1024,25 @@ function drawTransactionsTable() {
   summary.textContent = `${countedRows.length.toLocaleString()} transactions · ${Math.round(grandTotal).toLocaleString()} kr total`;
   wrap.appendChild(summary);
 
-  topEntries.forEach(([top, topRows]) => { wrap.appendChild(renderCategoryGroup(top, topRows, grandTotal)); });
+  const monthCount = Math.max(visibleMonths().length, 1);
+  topEntries.forEach(([top, topRows]) => { wrap.appendChild(renderCategoryGroup(top, topRows, grandTotal, monthCount)); });
 }
 
-function groupMeta(rows, grandTotal, isExcluded) {
+function groupMeta(rows, grandTotal, isExcluded, monthCount) {
   const subtotal = rows.reduce((s, i) => s + i.amount, 0);
   const countTxt = `${rows.length.toLocaleString()} txn${rows.length === 1 ? '' : 's'}`;
   const amountTxt = `${Math.round(subtotal).toLocaleString()} kr`;
+  const avgTxt = `${Math.round(subtotal / monthCount).toLocaleString()} kr/mo avg`;
   if (isExcluded) return `${countTxt} &middot; excluded from totals &middot; ${amountTxt}`;
   const pct = grandTotal ? (subtotal / grandTotal * 100).toFixed(1) : '0.0';
-  return `${countTxt} &middot; ${pct}% &middot; ${amountTxt}`;
+  return `${countTxt} &middot; ${pct}% &middot; ${amountTxt} &middot; ${avgTxt}`;
 }
 
-function renderCategoryGroup(top, topRows, grandTotal) {
+function renderCategoryGroup(top, topRows, grandTotal, monthCount) {
   const details = document.createElement('details');
   details.className = 'cat-group';
   const summary = document.createElement('summary');
-  summary.innerHTML = `<span><span class="caret">&#9656;</span> <span class="name">${escapeHtml(top)}</span></span><span class="meta">${groupMeta(topRows, grandTotal, top === 'Excluded')}</span>`;
+  summary.innerHTML = `<span><span class="caret">&#9656;</span> <span class="name">${escapeHtml(top)}</span></span><span class="meta">${groupMeta(topRows, grandTotal, top === 'Excluded', monthCount)}</span>`;
   details.appendChild(summary);
 
   const bySub = {};
@@ -1041,7 +1060,7 @@ function renderCategoryGroup(top, topRows, grandTotal) {
       const subDetails = document.createElement('details');
       subDetails.className = 'cat-group sub-group';
       const subSummary = document.createElement('summary');
-      subSummary.innerHTML = `<span><span class="caret">&#9656;</span> <span class="name">${escapeHtml(sub)}</span></span><span class="meta">${groupMeta(subRows, grandTotal)}</span>`;
+      subSummary.innerHTML = `<span><span class="caret">&#9656;</span> <span class="name">${escapeHtml(sub)}</span></span><span class="meta">${groupMeta(subRows, grandTotal, false, monthCount)}</span>`;
       subDetails.appendChild(subSummary);
       subDetails.appendChild(transactionsTable(subRows));
       details.appendChild(subDetails);
