@@ -126,6 +126,11 @@
 
   #range-filter-row { display: flex; align-items: center; gap: 18px; margin-top: 14px; font-size: 13px; color: var(--text-dim); flex-wrap: wrap; }
   #range-filter-row label { display: flex; align-items: center; gap: 6px; }
+  .btn-sm { padding: 4px 10px; font-size: 12px; }
+
+  th.sortable { cursor: pointer; user-select: none; white-space: nowrap; }
+  th.sortable:hover { color: var(--text); }
+  th.sortable .sort-arrow { color: var(--accent); margin-left: 4px; }
 
   details.cat-group { border: 1px solid var(--border); border-radius: 8px; margin-bottom: 8px; overflow: hidden; }
   details.cat-group > summary {
@@ -192,6 +197,7 @@
       <div id="range-filter-row">
         <label>From <select id="range-from-filter" class="cat-select"></select></label>
         <label>To <select id="range-to-filter" class="cat-select"></select></label>
+        <button id="export-spend-chart-btn" class="btn-sm" style="margin-left:auto;">Export chart</button>
       </div>
       <div id="breadcrumb-row" class="hidden">
         <button id="breadcrumb-back">&larr; Back</button>
@@ -202,8 +208,11 @@
     </div>
 
     <div class="card">
-      <h2>Savings</h2>
-      <div id="savings-chart-wrap" style="position:relative; height:300px;"><canvas id="savings-chart"></canvas></div>
+      <div style="display:flex; align-items:center; justify-content:space-between;">
+        <h2 style="margin:0;">Savings</h2>
+        <button id="export-savings-chart-btn" class="btn-sm">Export chart</button>
+      </div>
+      <div id="savings-chart-wrap" style="position:relative; height:300px; margin-top:14px;"><canvas id="savings-chart"></canvas></div>
     </div>
 
     <div class="card">
@@ -299,6 +308,9 @@ window.onload = () => {
   });
   document.getElementById('signout-btn').addEventListener('click', signOut);
   document.getElementById('connect-folder-btn').addEventListener('click', openFolderPicker);
+
+  document.getElementById('export-spend-chart-btn').addEventListener('click', () => downloadChartPNG(chartInstance, 'spend-chart.png'));
+  document.getElementById('export-savings-chart-btn').addEventListener('click', () => downloadChartPNG(savingsChartInstance, 'savings-chart.png'));
 
   setupImportUI();
 };
@@ -668,30 +680,46 @@ function renderSpendChart() {
   renderMerchantSummary(rows, drillState.category);
 }
 
-function renderMerchantSummary(rows, cat) {
-  const wrap = document.getElementById('merchant-summary-wrap');
-  if (drillState.level !== 'merchant') {
-    wrap.innerHTML = '';
-    return;
-  }
+function merchantSummaryRows(rows) {
   const totals = {};
   const counts = {};
-  rows.filter(i => i.category.split(' > ')[0] === cat).forEach(i => {
+  rows.forEach(i => {
     totals[i.merchant] = (totals[i.merchant] || 0) + i.amount;
     counts[i.merchant] = (counts[i.merchant] || 0) + 1;
   });
-  const sorted = Object.entries(totals).sort((a, b) => b[1] - a[1]);
+  return Object.keys(totals).map(m => ({ merchant: m, total: totals[m], count: counts[m] }));
+}
 
-  let html = `<table><thead><tr><th>Merchant</th><th>Transactions</th><th>Total</th></tr></thead><tbody>`;
-  sorted.forEach(([merch, total]) => {
-    html += `<tr>
-      <td>${escapeHtml(merch)}</td>
-      <td>${counts[merch]}</td>
-      <td>${Math.round(total).toLocaleString()} kr</td>
-    </tr>`;
-  });
-  html += `</tbody></table>`;
-  wrap.innerHTML = html;
+function merchantSummaryTable(rows, topN) {
+  let merchRows = merchantSummaryRows(rows);
+  if (topN) merchRows = merchRows.sort((a, b) => b.total - a.total).slice(0, topN);
+  return renderSortableTable(merchRows, [
+    { label: 'Merchant', sortValue: r => r.merchant, render: r => escapeHtml(r.merchant) },
+    { label: 'Transactions', sortValue: r => r.count, render: r => String(r.count), align: 'right' },
+    { label: 'Total', sortValue: r => r.total, render: r => Math.round(r.total).toLocaleString() + ' kr', align: 'right' },
+  ], { defaultSortIdx: 2, defaultSortDir: 'desc' });
+}
+
+function renderMerchantSummary(rows, cat) {
+  const wrap = document.getElementById('merchant-summary-wrap');
+  wrap.innerHTML = '';
+
+  if (drillState.level === 'merchant') {
+    wrap.appendChild(merchantSummaryTable(rows.filter(i => i.category.split(' > ')[0] === cat)));
+  } else if (drillState.level === 'sub') {
+    // Top merchants per subcategory, aggregated across every month in the selected range
+    // (not just whichever month is hovered in the chart tooltip).
+    const entry = CATEGORY_TREE.find(c => c.key === cat);
+    entry.subs.forEach(sub => {
+      const subRows = rows.filter(i => i.category === cat + ' > ' + sub);
+      if (!subRows.length) return;
+      const heading = document.createElement('div');
+      heading.style.cssText = 'margin: 16px 0 4px; font-size: 13px; font-weight: 600; color: var(--text);';
+      heading.textContent = sub + ' — top merchants';
+      wrap.appendChild(heading);
+      wrap.appendChild(merchantSummaryTable(subRows, 5));
+    });
+  }
 }
 
 function handleChartClick(evt, elements) {
@@ -718,6 +746,76 @@ function colorForIndex(i) {
   const palette = ['#5eb1ff', '#7ee8b8', '#ffb454', '#ff6b6b', '#c792ea', '#82e0f9',
                     '#f78c6c', '#89ddff', '#c3e88d', '#ffcb6b', '#f07178', '#addb67', '#ff5370'];
   return palette[i % palette.length];
+}
+
+function downloadChartPNG(chart, filename) {
+  if (!chart) return;
+  const link = document.createElement('a');
+  link.href = chart.toBase64Image('image/png', 1);
+  link.download = filename;
+  link.click();
+}
+
+// ============================================================
+// SORTABLE TABLE HELPER
+// columns: [{ label, sortValue(row) -> string|number, render(row) -> html string, align }]
+// ============================================================
+function renderSortableTable(rows, columns, options = {}) {
+  const table = document.createElement('table');
+  const thead = document.createElement('thead');
+  const headRow = document.createElement('tr');
+  columns.forEach((col, idx) => {
+    const th = document.createElement('th');
+    th.className = 'sortable';
+    th.dataset.colIdx = idx;
+    headRow.appendChild(th);
+  });
+  thead.appendChild(headRow);
+  const tbody = document.createElement('tbody');
+  table.appendChild(thead);
+  table.appendChild(tbody);
+
+  let sortIdx = options.defaultSortIdx || 0;
+  let sortDir = options.defaultSortDir || 'desc';
+
+  function draw() {
+    const col = columns[sortIdx];
+    const sorted = rows.slice().sort((a, b) => {
+      const av = col.sortValue(a), bv = col.sortValue(b);
+      const cmp = typeof av === 'string' ? av.localeCompare(bv) : av - bv;
+      return sortDir === 'asc' ? cmp : -cmp;
+    });
+    tbody.innerHTML = '';
+    sorted.forEach(row => {
+      const tr = document.createElement('tr');
+      columns.forEach(col => {
+        const td = document.createElement('td');
+        if (col.align) td.style.textAlign = col.align;
+        td.innerHTML = col.render(row);
+        tr.appendChild(td);
+      });
+      tbody.appendChild(tr);
+    });
+    [...headRow.children].forEach((th, i) => {
+      th.innerHTML = columns[i].label + (i === sortIdx ? `<span class="sort-arrow">${sortDir === 'asc' ? '▲' : '▼'}</span>` : '');
+    });
+  }
+
+  headRow.addEventListener('click', (e) => {
+    const th = e.target.closest('th');
+    if (!th) return;
+    const idx = parseInt(th.dataset.colIdx, 10);
+    if (idx === sortIdx) {
+      sortDir = sortDir === 'asc' ? 'desc' : 'asc';
+    } else {
+      sortIdx = idx;
+      sortDir = columns[idx].defaultDir || 'desc';
+    }
+    draw();
+  });
+
+  draw();
+  return table;
 }
 
 // ============================================================
@@ -797,8 +895,12 @@ function drawTransactionsTable() {
   if (cat) rows = rows.filter(i => i.category.split(' > ')[0] === cat);
 
   const wrap = document.getElementById('txn-table-wrap');
+  wrap.innerHTML = '';
   if (!rows.length) {
-    wrap.innerHTML = `<div style="margin: 10px 0; color: var(--text-dim); font-size: 13px;">No transactions in this range.</div>`;
+    const empty = document.createElement('div');
+    empty.style.cssText = 'margin: 10px 0; color: var(--text-dim); font-size: 13px;';
+    empty.textContent = 'No transactions in this range.';
+    wrap.appendChild(empty);
     return;
   }
 
@@ -809,16 +911,19 @@ function drawTransactionsTable() {
     const top = r.category.split(' > ')[0];
     (byTop[top] = byTop[top] || []).push(r);
   });
-  const topEntries = Object.entries(byTop).sort((a, b) =>
-    b[1].reduce((s, i) => s + i.amount, 0) - a[1].reduce((s, i) => s + i.amount, 0)
-  );
+  // "Excluded" always sorts last, regardless of amount — everything else by subtotal descending.
+  const topEntries = Object.entries(byTop).sort((a, b) => {
+    if (a[0] === 'Excluded') return 1;
+    if (b[0] === 'Excluded') return -1;
+    return b[1].reduce((s, i) => s + i.amount, 0) - a[1].reduce((s, i) => s + i.amount, 0);
+  });
 
-  let html = `<div style="margin: 10px 0; color: var(--text-dim); font-size: 13px;">
-    ${rows.length.toLocaleString()} transactions &middot; ${Math.round(grandTotal).toLocaleString()} kr total
-  </div>`;
-  topEntries.forEach(([top, topRows]) => { html += renderCategoryGroup(top, topRows, grandTotal); });
+  const summary = document.createElement('div');
+  summary.style.cssText = 'margin: 10px 0; color: var(--text-dim); font-size: 13px;';
+  summary.textContent = `${rows.length.toLocaleString()} transactions · ${Math.round(grandTotal).toLocaleString()} kr total`;
+  wrap.appendChild(summary);
 
-  wrap.innerHTML = html;
+  topEntries.forEach(([top, topRows]) => { wrap.appendChild(renderCategoryGroup(top, topRows, grandTotal)); });
 }
 
 function groupMeta(rows, grandTotal) {
@@ -828,6 +933,12 @@ function groupMeta(rows, grandTotal) {
 }
 
 function renderCategoryGroup(top, topRows, grandTotal) {
+  const details = document.createElement('details');
+  details.className = 'cat-group';
+  const summary = document.createElement('summary');
+  summary.innerHTML = `<span><span class="caret">&#9656;</span> <span class="name">${escapeHtml(top)}</span></span><span class="meta">${groupMeta(topRows, grandTotal)}</span>`;
+  details.appendChild(summary);
+
   const bySub = {};
   let hasSubs = false;
   topRows.forEach(r => {
@@ -835,39 +946,33 @@ function renderCategoryGroup(top, topRows, grandTotal) {
     if (sub) { hasSubs = true; (bySub[sub] = bySub[sub] || []).push(r); }
   });
 
-  let inner;
   if (hasSubs) {
     const subEntries = Object.entries(bySub).sort((a, b) =>
       b[1].reduce((s, i) => s + i.amount, 0) - a[1].reduce((s, i) => s + i.amount, 0)
     );
-    inner = subEntries.map(([sub, subRows]) => `
-      <details class="cat-group sub-group">
-        <summary><span><span class="caret">&#9656;</span> <span class="name">${escapeHtml(sub)}</span></span><span class="meta">${groupMeta(subRows, grandTotal)}</span></summary>
-        ${transactionsTableHtml(subRows)}
-      </details>`).join('');
+    subEntries.forEach(([sub, subRows]) => {
+      const subDetails = document.createElement('details');
+      subDetails.className = 'cat-group sub-group';
+      const subSummary = document.createElement('summary');
+      subSummary.innerHTML = `<span><span class="caret">&#9656;</span> <span class="name">${escapeHtml(sub)}</span></span><span class="meta">${groupMeta(subRows, grandTotal)}</span>`;
+      subDetails.appendChild(subSummary);
+      subDetails.appendChild(transactionsTable(subRows));
+      details.appendChild(subDetails);
+    });
   } else {
-    inner = transactionsTableHtml(topRows);
+    details.appendChild(transactionsTable(topRows));
   }
 
-  return `<details class="cat-group">
-    <summary><span><span class="caret">&#9656;</span> <span class="name">${escapeHtml(top)}</span></span><span class="meta">${groupMeta(topRows, grandTotal)}</span></summary>
-    ${inner}
-  </details>`;
+  return details;
 }
 
-function transactionsTableHtml(rows) {
-  const sorted = rows.slice().sort((a, b) => b.txn_date.localeCompare(a.txn_date));
-  let html = `<table><thead><tr><th>Date</th><th>Merchant</th><th>Amount</th><th>Card</th></tr></thead><tbody>`;
-  sorted.forEach(r => {
-    html += `<tr>
-      <td>${r.txn_date}</td>
-      <td>${escapeHtml(r.merchant)}</td>
-      <td>${r.amount.toFixed(2)}</td>
-      <td>${escapeHtml(r.card)}</td>
-    </tr>`;
-  });
-  html += `</tbody></table>`;
-  return html;
+function transactionsTable(rows) {
+  return renderSortableTable(rows, [
+    { label: 'Date', sortValue: r => r.txn_date, render: r => r.txn_date },
+    { label: 'Merchant', sortValue: r => r.merchant, render: r => escapeHtml(r.merchant) },
+    { label: 'Amount', sortValue: r => r.amount, render: r => r.amount.toFixed(2), align: 'right' },
+    { label: 'Card', sortValue: r => r.card, render: r => escapeHtml(r.card) },
+  ], { defaultSortIdx: 0, defaultSortDir: 'desc' });
 }
 
 // ============================================================
