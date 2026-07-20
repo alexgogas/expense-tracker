@@ -132,6 +132,13 @@
   th.sortable:hover { color: var(--text); }
   th.sortable .sort-arrow { color: var(--accent); margin-left: 4px; }
 
+  #unsaved-changes-bar {
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    margin: 10px 0; padding: 10px 14px;
+    background: rgba(255,180,84,0.08); border: 1px solid var(--warn); border-radius: 8px;
+    font-size: 13px; color: var(--warn);
+  }
+
   details.cat-group { border: 1px solid var(--border); border-radius: 8px; margin-bottom: 8px; overflow: hidden; }
   details.cat-group > summary {
     cursor: pointer; padding: 10px 12px; background: var(--panel-2);
@@ -220,6 +227,10 @@
       <h2>Transactions</h2>
       <div class="format-row">
         <select id="txn-category-filter" class="cat-select"><option value="">All categories</option></select>
+      </div>
+      <div id="unsaved-changes-bar" class="hidden">
+        <span id="unsaved-changes-label"></span>
+        <button class="primary btn-sm" id="save-changes-btn">Save to Drive</button>
       </div>
       <div id="txn-table-wrap"></div>
     </div>
@@ -322,9 +333,17 @@ window.onload = () => {
 
   document.getElementById('export-spend-chart-btn').addEventListener('click', () => downloadChartPNG(chartInstance, 'spend-chart.png'));
   document.getElementById('export-savings-chart-btn').addEventListener('click', () => downloadChartPNG(savingsChartInstance, 'savings-chart.png'));
+  document.getElementById('save-changes-btn').addEventListener('click', saveDatasetChanges);
 
   setupImportUI();
 };
+
+window.addEventListener('beforeunload', (e) => {
+  if (unsavedChanges) {
+    e.preventDefault();
+    e.returnValue = '';
+  }
+});
 
 function signOut() {
   if (accessToken) {
@@ -596,7 +615,7 @@ function renderRangeFilter() {
       rangeFilter.to = rangeFilter.from;
       toSel.value = rangeFilter.to;
     }
-    onRangeChange();
+    refreshViews();
   };
   toSel.onchange = () => {
     rangeFilter.to = toSel.value;
@@ -604,11 +623,13 @@ function renderRangeFilter() {
       rangeFilter.from = rangeFilter.to;
       fromSel.value = rangeFilter.from;
     }
-    onRangeChange();
+    refreshViews();
   };
 }
 
-function onRangeChange() {
+// Redraws the chart/savings chart/transactions table without resetting drillState or rangeFilter —
+// used both for range-filter changes and for in-place edits like recategorizing a transaction.
+function refreshViews() {
   renderSpendChart();
   renderSavingsChart();
   drawTransactionsTable();
@@ -621,6 +642,8 @@ function categoryHasSubs(topCategory) {
 
 function renderOverview() {
   drillState = { level: 'top', category: null };
+  unsavedChanges = false;
+  updateUnsavedBar();
   const counted = dataset.filter(i => i.category !== 'Excluded');
   const total = counted.reduce((s, i) => s + i.amount, 0);
   const months = sortedMonthList();
@@ -849,7 +872,8 @@ function renderSortableTable(rows, columns, options = {}) {
       columns.forEach(col => {
         const td = document.createElement('td');
         if (col.align) td.style.textAlign = col.align;
-        td.innerHTML = col.render(row);
+        if (col.mount) col.mount(td, row);
+        else td.innerHTML = col.render(row);
         tr.appendChild(td);
       });
       tbody.appendChild(tr);
@@ -1035,7 +1059,72 @@ function transactionsTable(rows) {
     { label: 'Merchant', sortValue: r => r.merchant, render: r => escapeHtml(r.merchant) },
     { label: 'Amount', sortValue: r => r.amount, render: r => r.amount.toFixed(2), align: 'right' },
     { label: 'Card', sortValue: r => r.card, render: r => escapeHtml(r.card) },
+    {
+      label: 'Category',
+      sortValue: r => r.category,
+      mount: (td, row) => {
+        const sel = document.createElement('select');
+        sel.className = 'cat-select';
+        const leaves = (typeof LEAF_CATEGORIES !== 'undefined') ? LEAF_CATEGORIES : [row.category];
+        (leaves.includes(row.category) ? leaves : [row.category, ...leaves]).forEach(c => {
+          const opt = document.createElement('option');
+          opt.value = c;
+          opt.textContent = c;
+          if (c === row.category) opt.selected = true;
+          sel.appendChild(opt);
+        });
+        sel.addEventListener('change', () => recategorizeTransaction(row.id, sel.value));
+        td.appendChild(sel);
+      }
+    },
   ], { defaultSortIdx: 0, defaultSortDir: 'desc' });
+}
+
+// ============================================================
+// RECATEGORIZE EXISTING TRANSACTIONS
+// ============================================================
+let unsavedChanges = false;
+
+function recategorizeTransaction(id, newCategory) {
+  const txn = dataset.find(t => t.id === id);
+  if (!txn || txn.category === newCategory) return;
+  txn.category = newCategory;
+  overrides[txn.merchant] = newCategory;
+  unsavedChanges = true;
+  updateUnsavedBar();
+  refreshViews();
+}
+
+function updateUnsavedBar() {
+  const bar = document.getElementById('unsaved-changes-bar');
+  bar.classList.toggle('hidden', !unsavedChanges);
+  if (unsavedChanges) {
+    document.getElementById('unsaved-changes-label').textContent =
+      'You have unsaved recategorizations. Reload the page to discard them.';
+  }
+}
+
+async function saveDatasetChanges() {
+  if (!unsavedChanges) return;
+  setStatus('Saving changes to Drive…');
+  try {
+    await updateFileContent(fileIds['canonical_dataset.json'], JSON.stringify(dataset));
+    await updateFileContent(fileIds['canonical_overrides.json'], JSON.stringify(overrides, null, 2));
+    unsavedChanges = false;
+    updateUnsavedBar();
+    setStatus('Changes saved.');
+    showToast('Changes saved to Drive.', 'success');
+  } catch (err) {
+    setStatus('');
+    let hint = '';
+    if (err.message && err.message.includes('appNotAuthorizedToFile')) {
+      hint = ' Click "Grant file access" above and select the 4 data files, then try saving again.';
+    } else if (err.message && err.message.includes('401')) {
+      hint = ' Your session may have expired — try signing in again.';
+    }
+    showToast('Save failed: ' + err.message + hint, 'error');
+    console.error(err);
+  }
 }
 
 // ============================================================
