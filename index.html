@@ -237,6 +237,7 @@
       <h2>Transactions</h2>
       <div class="format-row">
         <select id="txn-category-filter" class="cat-select"><option value="">All categories</option></select>
+        <select id="txn-card-filter" class="cat-select"><option value="">All cards</option></select>
       </div>
       <div id="unsaved-changes-bar" class="hidden">
         <span id="unsaved-changes-label"></span>
@@ -662,6 +663,35 @@ function rangeFilteredDataset() {
   return dataset.filter(i => months.has(i.month));
 }
 
+// When the From/To range narrows to a single month, the charts switch from monthly bars to
+// daily ones for that month. "Bucket" abstracts over both granularities: a month label
+// ("Jan-26") normally, or a "YYYY-MM-DD" day string when isDailyMode() is true.
+function isDailyMode() {
+  return !!(rangeFilter.from && rangeFilter.from === rangeFilter.to);
+}
+
+function daysInVisibleMonth() {
+  const anyTxn = dataset.find(t => t.month === rangeFilter.from);
+  if (!anyTxn) return [];
+  const [y, m] = anyTxn.txn_date.split('-').map(Number);
+  const lastDay = new Date(y, m, 0).getDate();
+  const days = [];
+  for (let d = 1; d <= lastDay; d++) days.push(`${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`);
+  return days;
+}
+
+function visibleBuckets() {
+  return isDailyMode() ? daysInVisibleMonth() : visibleMonths();
+}
+
+function bucketOf(txn) {
+  return isDailyMode() ? txn.txn_date : txn.month;
+}
+
+function bucketLabel(bucket) {
+  return isDailyMode() ? String(parseInt(bucket.slice(-2), 10)) : bucket;
+}
+
 function renderRangeFilter() {
   const months = sortedMonthList();
   const fromSel = document.getElementById('range-from-filter');
@@ -693,9 +723,28 @@ function renderRangeFilter() {
 // Redraws the chart/savings chart/transactions table without resetting drillState or rangeFilter —
 // used both for range-filter changes and for in-place edits like recategorizing a transaction.
 function refreshViews() {
+  renderStatRow();
   renderSpendChart();
   renderSavingsChart();
   drawTransactionsTable();
+}
+
+function renderStatRow() {
+  const counted = rangeFilteredDataset().filter(i => i.category !== 'Excluded');
+  const total = counted.reduce((s, i) => s + i.amount, 0);
+  const statRow = document.getElementById('stat-row');
+  statRow.innerHTML = '';
+  const stats = [
+    { label: 'Transactions', value: counted.length.toLocaleString() },
+    { label: 'Total tracked', value: Math.round(total).toLocaleString() + ' kr' },
+    { label: 'Months covered', value: visibleMonths().length },
+  ];
+  stats.forEach(s => {
+    const el = document.createElement('div');
+    el.className = 'stat';
+    el.innerHTML = `<div class="label">${s.label}</div><div class="value">${s.value}</div>`;
+    statRow.appendChild(el);
+  });
 }
 
 function categoryHasSubs(topCategory) {
@@ -716,26 +765,11 @@ function renderOverview() {
   drillState = { level: 'top', category: null };
   unsavedChanges = false;
   updateUnsavedBar();
-  const counted = dataset.filter(i => i.category !== 'Excluded');
-  const total = counted.reduce((s, i) => s + i.amount, 0);
   const months = sortedMonthList();
   rangeFilter = { from: months[0] || null, to: months[months.length - 1] || null };
   renderRangeFilter();
 
-  const statRow = document.getElementById('stat-row');
-  statRow.innerHTML = '';
-  const stats = [
-    { label: 'Transactions', value: counted.length.toLocaleString() },
-    { label: 'Total tracked', value: Math.round(total).toLocaleString() + ' kr' },
-    { label: 'Months covered', value: months.length },
-  ];
-  stats.forEach(s => {
-    const el = document.createElement('div');
-    el.className = 'stat';
-    el.innerHTML = `<div class="label">${s.label}</div><div class="value">${s.value}</div>`;
-    statRow.appendChild(el);
-  });
-
+  renderStatRow();
   renderSpendChart();
   renderSavingsChart();
   renderTransactionsBrowser();
@@ -744,7 +778,7 @@ function renderOverview() {
 
 function renderSpendChart() {
   document.getElementById('breadcrumb-back').onclick = drillBack;
-  const months = visibleMonths();
+  const buckets = visibleBuckets();
   const rows = rangeFilteredDataset();
   let datasets, breadcrumbVisible = false, breadcrumbText = '';
 
@@ -758,7 +792,7 @@ function renderSpendChart() {
     const categories = Object.keys(byCategory);
     datasets = categories.map((cat, idx) => ({
       label: cat,
-      data: months.map(m => rows.filter(i => i.month === m && i.category.split(' > ')[0] === cat).reduce((s, i) => s + i.amount, 0)),
+      data: buckets.map(b => rows.filter(i => bucketOf(i) === b && i.category.split(' > ')[0] === cat).reduce((s, i) => s + i.amount, 0)),
       backgroundColor: colorForIndex(idx),
       stack: 'spend',
       _category: cat
@@ -769,7 +803,7 @@ function renderSpendChart() {
     const subs = entry.subs;
     datasets = subs.map((sub, idx) => ({
       label: sub,
-      data: months.map(m => rows.filter(i => i.month === m && i.category === cat + ' > ' + sub).reduce((s, i) => s + i.amount, 0)),
+      data: buckets.map(b => rows.filter(i => bucketOf(i) === b && i.category === cat + ' > ' + sub).reduce((s, i) => s + i.amount, 0)),
       backgroundColor: colorForIndex(idx),
       stack: 'spend'
     }));
@@ -784,7 +818,7 @@ function renderSpendChart() {
     const topMerchants = Object.entries(merchantTotals).sort((a, b) => b[1] - a[1]).slice(0, 8).map(e => e[0]);
     datasets = topMerchants.map((merch, idx) => ({
       label: merch,
-      data: months.map(m => rows.filter(i => i.month === m && i.merchant === merch && i.category.split(' > ')[0] === cat).reduce((s, i) => s + i.amount, 0)),
+      data: buckets.map(b => rows.filter(i => bucketOf(i) === b && i.merchant === merch && i.category.split(' > ')[0] === cat).reduce((s, i) => s + i.amount, 0)),
       backgroundColor: colorForIndex(idx),
       stack: 'spend'
     }));
@@ -794,7 +828,7 @@ function renderSpendChart() {
 
   // Trend line: total across whatever's currently plotted (all top categories, or the
   // subcategories/merchants of the drilled-in one), overlaid on top of the stacked bars.
-  const trendData = months.map((m, idx) => datasets.reduce((s, d) => s + (d.data[idx] || 0), 0));
+  const trendData = buckets.map((b, idx) => datasets.reduce((s, d) => s + (d.data[idx] || 0), 0));
   datasets = [...datasets, {
     label: 'Trend',
     data: trendData,
@@ -814,17 +848,17 @@ function renderSpendChart() {
   if (chartInstance) chartInstance.destroy();
   chartInstance = new Chart(ctx, {
     type: 'bar',
-    data: { labels: months, datasets },
+    data: { labels: buckets.map(bucketLabel), datasets },
     options: {
       responsive: true,
       maintainAspectRatio: false,
       onClick: handleChartClick,
       scales: {
-        x: { stacked: true, ticks: { color: '#9aa4b2' }, grid: { color: '#2a303a' } },
+        x: { stacked: true, ticks: { color: '#9aa4b2' }, grid: { color: '#2a303a' }, title: { display: isDailyMode(), text: 'Day of month', color: '#9aa4b2' } },
         y: { stacked: true, ticks: { color: '#9aa4b2' }, grid: { color: '#2a303a' } }
       },
       plugins: {
-        legend: { labels: { color: '#e8eaed', boxWidth: 12, font: { size: 11 } } },
+        legend: { labels: { color: '#e8eaed', boxWidth: 12, font: { size: 11 } }, onClick: legendDoubleClickHandler() },
         tooltip: {
           callbacks: {
             afterBody: (items) => {
@@ -832,11 +866,11 @@ function renderSpendChart() {
               const hoveredDataset = chartInstance.data.datasets[items[0].datasetIndex];
               if (hoveredDataset.stack !== 'spend') return []; // skip the trend line itself
               const sub = hoveredDataset.label;
-              const month = chartInstance.data.labels[items[0].dataIndex];
+              const bucket = buckets[items[0].dataIndex];
               const cat = drillState.category;
               const totals = {};
               rangeFilteredDataset()
-                .filter(i => i.month === month && i.category === cat + ' > ' + sub)
+                .filter(i => bucketOf(i) === bucket && i.category === cat + ' > ' + sub)
                 .forEach(i => { totals[i.merchant] = (totals[i.merchant] || 0) + i.amount; });
               const top3 = Object.entries(totals).sort((a, b) => b[1] - a[1]).slice(0, 3);
               if (!top3.length) return [];
@@ -919,6 +953,49 @@ function colorForIndex(i) {
   return palette[i % palette.length];
 }
 
+// Chart.js legend clicks are single-click-toggle by default. This wraps that behavior so a
+// double-click isolates just that series (hides all others), and double-clicking the sole
+// remaining visible series restores everyone. Returns a fresh handler (own timing state) each
+// call — invoke once per Chart construction.
+function legendDoubleClickHandler() {
+  const DELAY = 300; // ms — standard double-click window
+  let pendingIndex = null;
+  let pendingTimer = null;
+
+  return (evt, legendItem, legend) => {
+    const chart = legend.chart;
+    const index = legendItem.datasetIndex;
+
+    if (pendingTimer !== null && pendingIndex === index) {
+      // Second click on the same item within the window: it's a double-click. Cancel the
+      // single-click toggle that was about to fire and isolate/restore instead.
+      clearTimeout(pendingTimer);
+      pendingTimer = null;
+      pendingIndex = null;
+
+      const onlyThisVisible = chart.isDatasetVisible(index) &&
+        chart.data.datasets.every((_, i) => i === index || !chart.isDatasetVisible(i));
+      chart.data.datasets.forEach((_, i) => {
+        if (onlyThisVisible || i === index) chart.show(i);
+        else chart.hide(i);
+      });
+      return;
+    }
+
+    // First click: don't act immediately — a second click might still turn this into a
+    // double-click. If none arrives within the window, fall back to the normal single-click
+    // toggle-visibility behavior.
+    if (pendingTimer !== null) clearTimeout(pendingTimer);
+    pendingIndex = index;
+    pendingTimer = setTimeout(() => {
+      pendingTimer = null;
+      pendingIndex = null;
+      if (chart.isDatasetVisible(index)) chart.hide(index);
+      else chart.show(index);
+    }, DELAY);
+  };
+}
+
 function downloadChartPNG(chart, filename) {
   if (!chart) return;
   const link = document.createElement('a');
@@ -994,54 +1071,57 @@ function renderSortableTable(rows, columns, options = {}) {
 // SAVINGS CHART (spend by card + salary-minus-spend line)
 // ============================================================
 function renderSavingsChart() {
-  const months = visibleMonths();
+  const buckets = visibleBuckets();
   const rows = rangeFilteredDataset();
   const cards = [...new Set(rows.map(i => i.card))];
 
   const cardDatasets = cards.map((card, idx) => ({
     label: card,
-    data: months.map(m => rows.filter(i => i.month === m && i.card === card && i.category !== 'Excluded').reduce((s, i) => s + i.amount, 0)),
+    data: buckets.map(b => rows.filter(i => bucketOf(i) === b && i.card === card && i.category !== 'Excluded').reduce((s, i) => s + i.amount, 0)),
     backgroundColor: colorForIndex(idx),
     stack: 'spend',
     type: 'bar',
     yAxisID: 'y'
   }));
 
-  const salaryByMonth = {};
-  rows.filter(i => i.merchant === 'Lön (salary)').forEach(i => { salaryByMonth[i.month] = i.amount; });
-
-  const savingsData = months.map(m => {
-    if (!(m in salaryByMonth)) return null;
-    const spend = rows.filter(i => i.month === m && i.category !== 'Excluded').reduce((s, i) => s + i.amount, 0);
-    return salaryByMonth[m] - spend;
-  });
-
-  const savingsDataset = {
-    label: 'Savings (salary − spend)',
-    data: savingsData,
-    type: 'line',
-    borderColor: '#e8eaed',
-    backgroundColor: '#e8eaed',
-    borderWidth: 2,
-    pointRadius: 3,
-    spanGaps: false,
-    yAxisID: 'y1'
-  };
+  // Salary is inherently a monthly figure, so "savings" (salary minus spend) doesn't have a
+  // meaningful daily breakdown — only plot it at month-level granularity.
+  let datasets = cardDatasets;
+  if (!isDailyMode()) {
+    const salaryByMonth = {};
+    rows.filter(i => i.merchant === 'Lön (salary)').forEach(i => { salaryByMonth[i.month] = i.amount; });
+    const savingsData = buckets.map(b => {
+      if (!(b in salaryByMonth)) return null;
+      const spend = rows.filter(i => bucketOf(i) === b && i.category !== 'Excluded').reduce((s, i) => s + i.amount, 0);
+      return salaryByMonth[b] - spend;
+    });
+    datasets = [...cardDatasets, {
+      label: 'Savings (salary − spend)',
+      data: savingsData,
+      type: 'line',
+      borderColor: '#e8eaed',
+      backgroundColor: '#e8eaed',
+      borderWidth: 2,
+      pointRadius: 3,
+      spanGaps: false,
+      yAxisID: 'y1'
+    }];
+  }
 
   const ctx = document.getElementById('savings-chart').getContext('2d');
   if (savingsChartInstance) savingsChartInstance.destroy();
   savingsChartInstance = new Chart(ctx, {
-    data: { labels: months, datasets: [...cardDatasets, savingsDataset] },
+    data: { labels: buckets.map(bucketLabel), datasets },
     options: {
       responsive: true,
       maintainAspectRatio: false,
       scales: {
-        x: { stacked: true, ticks: { color: '#9aa4b2' }, grid: { color: '#2a303a' } },
+        x: { stacked: true, ticks: { color: '#9aa4b2' }, grid: { color: '#2a303a' }, title: { display: isDailyMode(), text: 'Day of month', color: '#9aa4b2' } },
         y: { stacked: true, position: 'left', ticks: { color: '#9aa4b2' }, grid: { color: '#2a303a' } },
-        y1: { position: 'right', ticks: { color: '#9aa4b2' }, grid: { drawOnChartArea: false } }
+        y1: { position: 'right', ticks: { color: '#9aa4b2' }, grid: { drawOnChartArea: false }, display: !isDailyMode() }
       },
       plugins: {
-        legend: { labels: { color: '#e8eaed', boxWidth: 12, font: { size: 11 } } }
+        legend: { labels: { color: '#e8eaed', boxWidth: 12, font: { size: 11 } }, onClick: legendDoubleClickHandler() }
       }
     }
   });
@@ -1052,19 +1132,26 @@ function renderSavingsChart() {
 // ============================================================
 function renderTransactionsBrowser() {
   const catSel = document.getElementById('txn-category-filter');
+  const cardSel = document.getElementById('txn-card-filter');
 
   const topCategories = [...new Set(dataset.map(i => i.category.split(' > ')[0]))].sort();
   catSel.innerHTML = '<option value="">All categories</option>' + topCategories.map(c => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join('');
 
+  const cards = [...new Set(dataset.map(i => i.card))].sort();
+  cardSel.innerHTML = '<option value="">All cards</option>' + cards.map(c => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join('');
+
   catSel.onchange = drawTransactionsTable;
+  cardSel.onchange = drawTransactionsTable;
   drawTransactionsTable();
 }
 
 function drawTransactionsTable() {
   const cat = document.getElementById('txn-category-filter').value;
+  const card = document.getElementById('txn-card-filter').value;
 
   let rows = rangeFilteredDataset();
   if (cat) rows = rows.filter(i => i.category.split(' > ')[0] === cat);
+  if (card) rows = rows.filter(i => i.card === card);
 
   const wrap = document.getElementById('txn-table-wrap');
   wrap.innerHTML = '';
