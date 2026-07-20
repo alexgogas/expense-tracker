@@ -341,30 +341,28 @@ function setStatus(msg) {
 // ============================================================
 let pickerLoaded = false;
 
-// Set right before any user-initiated (button click) sign-in attempt, so the shared token
-// client callback below knows whether a failure should be shown to the user, or was just the
-// automatic silent attempt on page load quietly not panning out (expected for first-time
-// visitors, or after a real sign-out).
-let interactiveSignInRequested = false;
-
 window.onload = () => {
   tokenClient = google.accounts.oauth2.initTokenClient({
     client_id: CLIENT_ID,
     scope: SCOPES,
     callback: async (resp) => {
       if (resp.error) {
-        if (interactiveSignInRequested) showToast('Sign-in failed: ' + resp.error, 'error');
+        showToast('Sign-in failed: ' + resp.error, 'error');
         return;
       }
       accessToken = resp.access_token;
       await onSignedIn();
+    },
+    // Non-OAuth failures (the popup itself couldn't open, or the user closed it) land here
+    // instead of the callback above — without this they fail silently with no feedback.
+    error_callback: (err) => {
+      showToast('Sign-in failed: ' + (err && (err.type || err.message) || 'popup was blocked or closed'), 'error');
     }
   });
 
   gapi.load('picker', () => { pickerLoaded = true; });
 
   document.getElementById('signin-btn').addEventListener('click', () => {
-    interactiveSignInRequested = true;
     tokenClient.requestAccessToken();
   });
   document.getElementById('signout-btn').addEventListener('click', signOut);
@@ -380,12 +378,14 @@ window.onload = () => {
   document.getElementById('add-category-btn').addEventListener('click', addCategory);
 
   setupImportUI();
-
-  // Try a silent, non-interactive sign-in first, so a returning visitor in the same browser
-  // (already granted this app access previously) doesn't have to click "Sign in with Google" on
-  // every page load. prompt:'' means Google shows no UI at all if it can't do this silently —
-  // it just fails quietly here and the button stays for a normal manual sign-in.
-  tokenClient.requestAccessToken({ prompt: '' });
+  // Deliberately no automatic/silent requestAccessToken() call here. Google Identity Services
+  // doesn't support silent reauthorization — a popup is shown by design even when the user has
+  // already granted access, "to improve user security and awareness" (Google's own wording).
+  // Their guidance is to request a token from a direct user gesture (a button click) rather than
+  // automatically on load, which is also less likely to be blocked by the browser's popup
+  // blocker. So sign-in stays button-triggered; there's no way to make it click-free or
+  // popup-free with the current Google APIs short of running a backend that holds a refresh
+  // token — a much bigger architecture change than this static app currently has.
 };
 
 window.addEventListener('beforeunload', (e) => {
