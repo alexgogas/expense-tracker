@@ -171,6 +171,7 @@
   <div id="signin-area">
     <div id="user-chip"><img id="user-avatar" src="" alt=""><span id="user-name"></span></div>
     <button id="connect-folder-btn" class="hidden">Connect Drive folder</button>
+    <button id="grant-file-access-btn" class="hidden" title="Grants this app write access to the 4 data files themselves — needed once, since selecting a folder only grants read access to its contents.">Grant file access</button>
     <button id="signin-btn" class="primary">Sign in with Google</button>
     <button id="signout-btn" class="hidden">Sign out</button>
   </div>
@@ -252,6 +253,10 @@ const API_KEY = 'AIzaSyC6c4cHh7sdor57Eqn22bmMy2_6RVyWTvs'; // Restricted to Goog
 const DRIVE_FOLDER_NAME = 'Expense Tracker App'; // shown as a hint in the picker dialog title only
 const SCOPES = 'https://www.googleapis.com/auth/drive.file';
 const FOLDER_STORAGE_KEY = 'expense_tracker_folder_id';
+// The 4 files the folder must contain. Picking the *folder* in the Picker only grants drive.file
+// read access to its contents — writing to these pre-existing files needs each one individually
+// authorized via its own Picker selection (see openFileAccessPicker).
+const REQUIRED_FILES = ['canonical_dataset.json', 'canonical_aliases.json', 'canonical_overrides.json', 'merchant_category_lookup.json'];
 
 // ============================================================
 // STATE
@@ -308,6 +313,7 @@ window.onload = () => {
   });
   document.getElementById('signout-btn').addEventListener('click', signOut);
   document.getElementById('connect-folder-btn').addEventListener('click', openFolderPicker);
+  document.getElementById('grant-file-access-btn').addEventListener('click', openFileAccessPicker);
 
   document.getElementById('export-spend-chart-btn').addEventListener('click', () => downloadChartPNG(chartInstance, 'spend-chart.png'));
   document.getElementById('export-savings-chart-btn').addEventListener('click', () => downloadChartPNG(savingsChartInstance, 'savings-chart.png'));
@@ -323,6 +329,7 @@ function signOut() {
   document.getElementById('signin-btn').classList.remove('hidden');
   document.getElementById('signout-btn').classList.add('hidden');
   document.getElementById('connect-folder-btn').classList.add('hidden');
+  document.getElementById('grant-file-access-btn').classList.add('hidden');
   document.getElementById('user-chip').style.display = 'none';
   document.getElementById('app-content').classList.add('hidden');
   document.getElementById('no-folder-msg').classList.add('hidden');
@@ -352,6 +359,7 @@ async function onSignedIn() {
     folderId = storedFolderId;
     document.getElementById('connect-folder-btn').classList.remove('hidden');
     document.getElementById('connect-folder-btn').textContent = 'Change Drive folder';
+    document.getElementById('grant-file-access-btn').classList.remove('hidden');
     await loadAllData();
   } else {
     document.getElementById('connect-folder-btn').classList.remove('hidden');
@@ -401,7 +409,50 @@ async function onFolderPicked(data) {
   document.getElementById('header-sub').textContent = 'Connected to "' + doc.name + '"';
   document.getElementById('no-folder-msg').classList.add('hidden');
   document.getElementById('app-content').classList.remove('hidden');
+  document.getElementById('grant-file-access-btn').classList.remove('hidden');
   await loadAllData();
+  // Picking the folder only grants read access to its contents (drive.file scope) — writing
+  // to the 4 pre-existing files inside it needs each one individually authorized, so prompt
+  // for that as the next step of connecting.
+  showToast('Now select the 4 data files in that folder to grant write access.', 'success');
+  openFileAccessPicker();
+}
+
+function openFileAccessPicker() {
+  if (!pickerLoaded) {
+    showToast('Picker still loading, try again in a second.', 'error');
+    return;
+  }
+  if (!folderId) {
+    showToast('Connect a Drive folder first.', 'error');
+    return;
+  }
+  const view = new google.picker.DocsView(google.picker.ViewId.DOCS)
+    .setParent(folderId)
+    .setIncludeFolders(false)
+    .setSelectFolderEnabled(false)
+    .setMode(google.picker.DocsViewMode.LIST);
+
+  const picker = new google.picker.PickerBuilder()
+    .addView(view)
+    .setOAuthToken(accessToken)
+    .setDeveloperKey(API_KEY)
+    .enableFeature(google.picker.Feature.MULTISELECT_ENABLED)
+    .setTitle('Select all 4 data files to grant write access (cmd/ctrl-click for multiple)')
+    .setCallback(onFileAccessPicked)
+    .build();
+  picker.setVisible(true);
+}
+
+function onFileAccessPicked(data) {
+  if (data.action !== google.picker.Action.PICKED) return;
+  const pickedNames = data.docs.map(d => d.name);
+  const missing = REQUIRED_FILES.filter(name => !pickedNames.includes(name));
+  if (missing.length) {
+    showToast(`Granted write access to ${data.docs.length} file(s), but still missing: ${missing.join(', ')}. Click "Grant file access" again and select those too.`, 'error');
+  } else {
+    showToast('Granted write access to all data files — you can now save imports.', 'success');
+  }
 }
 
 // ============================================================
@@ -463,8 +514,7 @@ async function loadAllData() {
     fileIds = {};
     files.forEach(f => { fileIds[f.name] = f.id; });
 
-    const required = ['canonical_dataset.json', 'canonical_aliases.json', 'canonical_overrides.json', 'merchant_category_lookup.json'];
-    const missing = required.filter(name => !fileIds[name]);
+    const missing = REQUIRED_FILES.filter(name => !fileIds[name]);
     if (missing.length) {
       setStatus('');
       showToast('Missing files in Drive folder: ' + missing.join(', '), 'error');
@@ -1259,9 +1309,12 @@ async function saveImport() {
     renderOverview();
   } catch (err) {
     setStatus('');
-    const hint = err.message && err.message.includes('401')
-      ? ' Your session may have expired — try signing in again.'
-      : '';
+    let hint = '';
+    if (err.message && err.message.includes('appNotAuthorizedToFile')) {
+      hint = ' Click "Grant file access" above and select the 4 data files, then try saving again.';
+    } else if (err.message && err.message.includes('401')) {
+      hint = ' Your session may have expired — try signing in again.';
+    }
     showToast('Save failed: ' + err.message + hint, 'error');
     console.error(err);
   }
