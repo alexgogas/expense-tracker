@@ -1028,8 +1028,27 @@ async function handleFile(file) {
     }
 
     const { results, unmatched } = processImport(rawRows, selectedFormat, aliases, overrides, learnedLookup);
-    pendingImport = { results, unmatched, format: selectedFormat };
-    renderImportResults(results, unmatched);
+
+    // Skip transactions that already exist in the dataset, or repeat within this same file
+    // (same date, merchant, amount and card), so re-importing an overlapping statement is a no-op.
+    const existingKeys = new Set(dataset.map(transactionKey));
+    const seenInBatch = new Set();
+    const deduped = [];
+    let duplicateCount = 0;
+    results.forEach(r => {
+      const key = transactionKey(r);
+      if (existingKeys.has(key) || seenInBatch.has(key)) {
+        duplicateCount++;
+        return;
+      }
+      seenInBatch.add(key);
+      deduped.push(r);
+    });
+    const dedupedSet = new Set(deduped);
+    const dedupedUnmatched = unmatched.filter(r => dedupedSet.has(r));
+
+    pendingImport = { results: deduped, unmatched: dedupedUnmatched, format: selectedFormat };
+    renderImportResults(deduped, dedupedUnmatched, duplicateCount);
     setStatus('');
   } catch (err) {
     setStatus('');
@@ -1129,14 +1148,15 @@ function parsePersonkontoCSV(file) {
   });
 }
 
-function renderImportResults(results, unmatched) {
+function renderImportResults(results, unmatched, duplicateCount) {
   const container = document.getElementById('import-results');
   const total = results.reduce((s, r) => s + r.amount, 0);
 
   let html = `<div class="stat-row" style="margin-top:16px;">
-    <div class="stat"><div class="label">Parsed</div><div class="value">${results.length}</div></div>
+    <div class="stat"><div class="label">New</div><div class="value">${results.length}</div></div>
     <div class="stat"><div class="label">Total</div><div class="value">${Math.round(total).toLocaleString()} kr</div></div>
     <div class="stat"><div class="label">Needs review</div><div class="value">${unmatched.length}</div></div>
+    <div class="stat"><div class="label">Duplicates skipped</div><div class="value">${duplicateCount || 0}</div></div>
   </div>`;
 
   if (unmatched.length) {
@@ -1152,14 +1172,23 @@ function renderImportResults(results, unmatched) {
     html += `</tbody></table>`;
   }
 
-  html += `<div style="margin-top:16px; display:flex; gap:10px;">
-    <button class="primary" id="save-import-btn">Save to Drive</button>
-    <button id="discard-import-btn">Discard</button>
-  </div>`;
+  if (results.length) {
+    html += `<div style="margin-top:16px; display:flex; gap:10px;">
+      <button class="primary" id="save-import-btn">Save to Drive</button>
+      <button id="discard-import-btn">Discard</button>
+    </div>`;
+  } else {
+    html += `<div style="margin-top:16px; color: var(--text-dim); font-size: 13px;">
+      Every transaction in this file was already in your data — nothing new to save.
+    </div>
+    <div style="margin-top:12px;"><button id="discard-import-btn">Dismiss</button></div>`;
+  }
 
   container.innerHTML = html;
 
-  document.getElementById('save-import-btn').addEventListener('click', saveImport);
+  if (results.length) {
+    document.getElementById('save-import-btn').addEventListener('click', saveImport);
+  }
   document.getElementById('discard-import-btn').addEventListener('click', () => {
     pendingImport = null;
     container.innerHTML = '';
@@ -1176,6 +1205,10 @@ function escapeHtml(str) {
   const div = document.createElement('div');
   div.textContent = str;
   return div.innerHTML;
+}
+
+function transactionKey(t) {
+  return [t.txn_date, t.merchant.trim().toLowerCase(), t.amount.toFixed(2), t.card].join('|');
 }
 
 async function saveImport() {
