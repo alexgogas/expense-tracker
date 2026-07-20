@@ -932,6 +932,27 @@ function renderSpendChart() {
     fill: false
   }];
 
+  // Budget: same idea as Trend/Average, but the flat monthly (or, in daily mode, evenly
+  // per-day) budget ceiling for whatever's currently plotted, summed from each visible series'
+  // own budget. Only added when there's actually a budget to show — merchant-level has no
+  // per-merchant budgets, and a fully-unbudgeted category tree just has nothing to draw.
+  const monthlyBudgetSum = datasets.reduce((s, d) => s + budgetContributionForSeries(d.label), 0);
+  if (monthlyBudgetSum > 0) {
+    const perBucketBudget = isDailyMode() ? monthlyBudgetSum / (buckets.length || 1) : monthlyBudgetSum;
+    datasets = [...datasets, {
+      label: 'Budget',
+      data: buckets.map(() => perBucketBudget),
+      type: 'line',
+      stack: 'budget-line', // own stack group, separate from everything else
+      borderColor: '#ff6b6b',
+      backgroundColor: '#ff6b6b',
+      borderWidth: 1.5,
+      borderDash: [2, 3],
+      pointRadius: 0,
+      fill: false
+    }];
+  }
+
   document.getElementById('breadcrumb-row').classList.toggle('hidden', !breadcrumbVisible);
   document.getElementById('breadcrumb-label').textContent = breadcrumbText;
 
@@ -1053,10 +1074,25 @@ function colorForIndex(i) {
 // show()/hide() only toggle a dataset's own visibility; they don't touch other datasets, so
 // without this the trend/average lines would keep reflecting every series even after the user
 // hides or isolates some of them via the legend.
-function recomputeTrendAndAverage(chart) {
+// A single series' (top-level category, or drilled-in subcategory) own monthly budget
+// contribution to the chart's "Budget" reference line. Merchant-level series contribute
+// nothing — there's no per-merchant budget in this app's model.
+function budgetContributionForSeries(label) {
+  if (drillState.level === 'top') {
+    const entry = categoryTree.find(c => c.key === label);
+    return entry ? (effectiveMonthlyBudget(entry) || 0) : 0;
+  }
+  if (drillState.level === 'sub') {
+    return budgets[drillState.category + ' > ' + label] || 0;
+  }
+  return 0;
+}
+
+function recomputeReferenceLines(chart) {
   const trendDs = chart.data.datasets.find(d => d.label === 'Trend');
   const avgDs = chart.data.datasets.find(d => d.label === 'Average');
-  if (!trendDs && !avgDs) return;
+  const budgetDs = chart.data.datasets.find(d => d.label === 'Budget');
+  if (!trendDs && !avgDs && !budgetDs) return;
 
   const bucketCount = chart.data.labels.length;
   const spendData = Array.from({ length: bucketCount }, (_, idx) =>
@@ -1069,6 +1105,16 @@ function recomputeTrendAndAverage(chart) {
 
   if (trendDs) trendDs.data = spendData;
   if (avgDs) avgDs.data = spendData.map(() => avgValue);
+
+  if (budgetDs) {
+    const monthlyBudgetSum = chart.data.datasets.reduce((s, d, i) => {
+      if (d.stack !== 'spend' || !chart.isDatasetVisible(i)) return s;
+      return s + budgetContributionForSeries(d.label);
+    }, 0);
+    const perBucketBudget = isDailyMode() ? monthlyBudgetSum / (bucketCount || 1) : monthlyBudgetSum;
+    budgetDs.data = budgetDs.data.map(() => perBucketBudget);
+  }
+
   chart.update();
 }
 
@@ -1099,7 +1145,7 @@ function legendDoubleClickHandler() {
         if (onlyThisVisible || i === index) chart.show(i);
         else chart.hide(i);
       });
-      if (clickedIsSpendSeries) recomputeTrendAndAverage(chart);
+      if (clickedIsSpendSeries) recomputeReferenceLines(chart);
       return;
     }
 
@@ -1113,7 +1159,7 @@ function legendDoubleClickHandler() {
       pendingIndex = null;
       if (chart.isDatasetVisible(index)) chart.hide(index);
       else chart.show(index);
-      if (clickedIsSpendSeries) recomputeTrendAndAverage(chart);
+      if (clickedIsSpendSeries) recomputeReferenceLines(chart);
     }, DELAY);
   };
 }
@@ -1655,6 +1701,7 @@ function setBudget(path, rawValue) {
   else budgets[path] = amount;
   markUnsaved();
   renderBudgetsUI();
+  renderSpendChart(); // so the chart's Budget line reflects the edit immediately, not just on the next unrelated re-render
 }
 
 function budgetRowRight(path, explicitMonthlyBudget, actual, effectiveRangeBudget, isRolledUp) {
