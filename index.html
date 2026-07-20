@@ -156,6 +156,18 @@
   .cat-tree-sub-row:last-child { border-bottom: none; }
   .cat-tree-sub-row .cat-tree-actions button { padding: 2px 8px; font-size: 11px; }
 
+  .budget-row-right { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
+  .budget-actual { font-size: 12px; color: var(--text-dim); white-space: nowrap; }
+  .budget-bar-wrap { width: 90px; height: 8px; background: var(--panel-2); border-radius: 4px; overflow: hidden; flex-shrink: 0; }
+  .budget-bar { display: block; height: 100%; border-radius: 4px; background: var(--accent-2); }
+  .budget-bar.over { background: var(--danger); }
+  .budget-pct { font-size: 12px; white-space: nowrap; min-width: 90px; color: var(--text-dim); }
+  .budget-pct.over { color: var(--danger); }
+  .budget-input {
+    width: 80px; background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: 4px 8px; font-size: 13px; text-align: right;
+  }
+
   details.cat-group { border: 1px solid var(--border); border-radius: 8px; margin-bottom: 8px; overflow: hidden; }
   details.cat-group > summary {
     cursor: pointer; padding: 10px 12px; background: var(--panel-2);
@@ -267,6 +279,17 @@
       </div>
     </details>
 
+    <details class="card">
+      <summary><h2>Budgets</h2></summary>
+      <p style="color: var(--text-dim); font-size: 13px; margin: 0 0 14px;">
+        Set a monthly budget per category or subcategory. A category with no budget of its own
+        shows the sum of its subcategories' budgets instead. Actual spend is scaled to the
+        selected date range above (monthly budget &times; months in range).
+      </p>
+      <div class="stat-row" id="budget-total-row" style="margin-bottom: 16px;"></div>
+      <div id="budget-tree-wrap"></div>
+    </details>
+
     <details class="card" open>
       <summary><h2>Import new transactions</h2></summary>
       <div class="format-row" id="format-row">
@@ -318,6 +341,7 @@ let aliases = {};
 let overrides = {};
 let learnedLookup = {};
 let categoryTree = []; // live, user-editable taxonomy — see loadAllData() and the Categories card
+let budgets = {}; // categoryPath ("Top" or "Top > Sub") -> monthly budget amount — see the Budgets card
 let chartInstance = null;
 let selectedFormat = 'eurobonus';
 let pendingImport = null; // { results, unmatched, format }
@@ -647,6 +671,17 @@ async function loadAllData() {
       }
     }
 
+    if (fileIds['budgets.json']) {
+      budgets = JSON.parse(await downloadFile(fileIds['budgets.json']));
+    } else {
+      budgets = {};
+      try {
+        await createFileInFolder('budgets.json', JSON.stringify(budgets, null, 2));
+      } catch (e) {
+        console.error('Could not create budgets.json yet — will retry on next save.', e);
+      }
+    }
+
     setStatus(`Loaded ${dataset.length} transactions.`);
     renderOverview();
 
@@ -765,6 +800,7 @@ function refreshViews() {
   renderSpendChart();
   renderSavingsChart();
   drawTransactionsTable();
+  renderBudgetsUI();
 }
 
 function renderStatRow() {
@@ -812,6 +848,7 @@ function renderOverview() {
   renderSavingsChart();
   renderTransactionsBrowser();
   renderCategoriesUI();
+  renderBudgetsUI();
 }
 
 function renderSpendChart() {
@@ -894,6 +931,27 @@ function renderSpendChart() {
     pointRadius: 0,
     fill: false
   }];
+
+  // Budget: same idea as Trend/Average, but the flat monthly (or, in daily mode, evenly
+  // per-day) budget ceiling for whatever's currently plotted, summed from each visible series'
+  // own budget. Only added when there's actually a budget to show — merchant-level has no
+  // per-merchant budgets, and a fully-unbudgeted category tree just has nothing to draw.
+  const monthlyBudgetSum = datasets.reduce((s, d) => s + budgetContributionForSeries(d.label), 0);
+  if (monthlyBudgetSum > 0) {
+    const perBucketBudget = isDailyMode() ? monthlyBudgetSum / (buckets.length || 1) : monthlyBudgetSum;
+    datasets = [...datasets, {
+      label: 'Budget',
+      data: buckets.map(() => perBucketBudget),
+      type: 'line',
+      stack: 'budget-line', // own stack group, separate from everything else
+      borderColor: '#ff6b6b',
+      backgroundColor: '#ff6b6b',
+      borderWidth: 1.5,
+      borderDash: [2, 3],
+      pointRadius: 0,
+      fill: false
+    }];
+  }
 
   document.getElementById('breadcrumb-row').classList.toggle('hidden', !breadcrumbVisible);
   document.getElementById('breadcrumb-label').textContent = breadcrumbText;
@@ -1016,10 +1074,25 @@ function colorForIndex(i) {
 // show()/hide() only toggle a dataset's own visibility; they don't touch other datasets, so
 // without this the trend/average lines would keep reflecting every series even after the user
 // hides or isolates some of them via the legend.
-function recomputeTrendAndAverage(chart) {
+// A single series' (top-level category, or drilled-in subcategory) own monthly budget
+// contribution to the chart's "Budget" reference line. Merchant-level series contribute
+// nothing — there's no per-merchant budget in this app's model.
+function budgetContributionForSeries(label) {
+  if (drillState.level === 'top') {
+    const entry = categoryTree.find(c => c.key === label);
+    return entry ? (effectiveMonthlyBudget(entry) || 0) : 0;
+  }
+  if (drillState.level === 'sub') {
+    return budgets[drillState.category + ' > ' + label] || 0;
+  }
+  return 0;
+}
+
+function recomputeReferenceLines(chart) {
   const trendDs = chart.data.datasets.find(d => d.label === 'Trend');
   const avgDs = chart.data.datasets.find(d => d.label === 'Average');
-  if (!trendDs && !avgDs) return;
+  const budgetDs = chart.data.datasets.find(d => d.label === 'Budget');
+  if (!trendDs && !avgDs && !budgetDs) return;
 
   const bucketCount = chart.data.labels.length;
   const spendData = Array.from({ length: bucketCount }, (_, idx) =>
@@ -1032,6 +1105,16 @@ function recomputeTrendAndAverage(chart) {
 
   if (trendDs) trendDs.data = spendData;
   if (avgDs) avgDs.data = spendData.map(() => avgValue);
+
+  if (budgetDs) {
+    const monthlyBudgetSum = chart.data.datasets.reduce((s, d, i) => {
+      if (d.stack !== 'spend' || !chart.isDatasetVisible(i)) return s;
+      return s + budgetContributionForSeries(d.label);
+    }, 0);
+    const perBucketBudget = isDailyMode() ? monthlyBudgetSum / (bucketCount || 1) : monthlyBudgetSum;
+    budgetDs.data = budgetDs.data.map(() => perBucketBudget);
+  }
+
   chart.update();
 }
 
@@ -1062,7 +1145,7 @@ function legendDoubleClickHandler() {
         if (onlyThisVisible || i === index) chart.show(i);
         else chart.hide(i);
       });
-      if (clickedIsSpendSeries) recomputeTrendAndAverage(chart);
+      if (clickedIsSpendSeries) recomputeReferenceLines(chart);
       return;
     }
 
@@ -1076,7 +1159,7 @@ function legendDoubleClickHandler() {
       pendingIndex = null;
       if (chart.isDatasetVisible(index)) chart.hide(index);
       else chart.show(index);
-      if (clickedIsSpendSeries) recomputeTrendAndAverage(chart);
+      if (clickedIsSpendSeries) recomputeReferenceLines(chart);
     }, DELAY);
   };
 }
@@ -1412,6 +1495,11 @@ async function saveAllChanges() {
     } else {
       await createFileInFolder('category_tree.json', JSON.stringify(categoryTree, null, 2));
     }
+    if (fileIds['budgets.json']) {
+      await updateFileContent(fileIds['budgets.json'], JSON.stringify(budgets, null, 2));
+    } else {
+      await createFileInFolder('budgets.json', JSON.stringify(budgets, null, 2));
+    }
     unsavedChanges = false;
     updateUnsavedBar();
     setStatus('Changes saved.');
@@ -1441,6 +1529,12 @@ function migrateCategoryReferences(oldCat, newCat, prefixMatch) {
   dataset.forEach(t => { if (matches(t.category)) t.category = replace(t.category); });
   Object.keys(overrides).forEach(m => { if (matches(overrides[m])) overrides[m] = replace(overrides[m]); });
   Object.keys(learnedLookup).forEach(m => { if (matches(learnedLookup[m])) learnedLookup[m] = replace(learnedLookup[m]); });
+  // budgets is keyed BY category path (not a value holding one), so migrate the keys themselves.
+  Object.keys(budgets).forEach(k => {
+    if (!matches(k)) return;
+    const newKey = replace(k);
+    if (newKey !== k) { budgets[newKey] = budgets[k]; delete budgets[k]; }
+  });
 }
 
 function categoryInUseCount(cat, prefixMatch) {
@@ -1455,6 +1549,7 @@ function addCategory() {
   categoryTree.push({ key: name, subs: null });
   markUnsaved();
   renderCategoriesUI();
+  renderBudgetsUI();
 }
 
 function addSubcategory(topKey) {
@@ -1466,6 +1561,7 @@ function addSubcategory(topKey) {
   entry.subs.push(name);
   markUnsaved();
   renderCategoriesUI();
+  renderBudgetsUI();
 }
 
 function renameCategory(oldKey) {
@@ -1499,8 +1595,11 @@ function deleteCategory(key) {
   }
   if (!confirm(`Delete category "${key}"?`)) return;
   categoryTree = categoryTree.filter(c => c.key !== key);
+  delete budgets[key];
+  Object.keys(budgets).forEach(k => { if (k.startsWith(key + ' > ')) delete budgets[k]; });
   markUnsaved();
   renderCategoriesUI();
+  renderBudgetsUI();
 }
 
 function deleteSubcategory(topKey, sub) {
@@ -1513,8 +1612,10 @@ function deleteSubcategory(topKey, sub) {
   const entry = categoryTree.find(c => c.key === topKey);
   entry.subs = entry.subs.filter(s => s !== sub);
   if (!entry.subs.length) entry.subs = null;
+  delete budgets[topKey + ' > ' + sub];
   markUnsaved();
   renderCategoriesUI();
+  renderBudgetsUI();
 }
 
 function renderCategoriesUI() {
@@ -1569,6 +1670,146 @@ function renderCategoriesUI() {
     }
 
     wrap.appendChild(row);
+  });
+}
+
+// ============================================================
+// BUDGETS
+// ============================================================
+function actualSpendForPath(path, prefixMatch) {
+  return rangeFilteredDataset()
+    .filter(i => i.category !== 'Excluded')
+    .filter(i => prefixMatch ? i.category.split(' > ')[0] === path : i.category === path)
+    .reduce((s, i) => s + i.amount, 0);
+}
+
+// A category's own monthly budget if set; otherwise, if it has subcategories, the sum of
+// whichever of THEIR budgets are set (the "trace up" rollup) — or null if neither exists.
+// An explicit budget on the category itself always wins over the rollup.
+function effectiveMonthlyBudget(entry) {
+  if (budgets[entry.key]) return budgets[entry.key];
+  if (entry.subs && entry.subs.length) {
+    const subSum = entry.subs.reduce((s, sub) => s + (budgets[entry.key + ' > ' + sub] || 0), 0);
+    return subSum > 0 ? subSum : null;
+  }
+  return null;
+}
+
+function setBudget(path, rawValue) {
+  const amount = parseFloat(rawValue);
+  if (!rawValue || isNaN(amount) || amount <= 0) delete budgets[path];
+  else budgets[path] = amount;
+  markUnsaved();
+  renderBudgetsUI();
+  renderSpendChart(); // so the chart's Budget line reflects the edit immediately, not just on the next unrelated re-render
+}
+
+function budgetRowRight(path, explicitMonthlyBudget, actual, effectiveRangeBudget, isRolledUp) {
+  const right = document.createElement('span');
+  right.className = 'budget-row-right';
+
+  const actualSpan = document.createElement('span');
+  actualSpan.className = 'budget-actual';
+  actualSpan.textContent = Math.round(actual).toLocaleString() + ' kr';
+  right.appendChild(actualSpan);
+
+  if (effectiveRangeBudget) {
+    const pct = actual / effectiveRangeBudget * 100;
+    const over = pct > 100;
+
+    const barWrap = document.createElement('span');
+    barWrap.className = 'budget-bar-wrap';
+    const bar = document.createElement('span');
+    bar.className = 'budget-bar' + (over ? ' over' : '');
+    bar.style.width = Math.min(pct, 100) + '%';
+    barWrap.appendChild(bar);
+    right.appendChild(barWrap);
+
+    const pctSpan = document.createElement('span');
+    pctSpan.className = 'budget-pct' + (over ? ' over' : '');
+    pctSpan.textContent = Math.round(pct) + '%' + (isRolledUp ? ' (from subs)' : '');
+    right.appendChild(pctSpan);
+  } else {
+    const noBudget = document.createElement('span');
+    noBudget.className = 'budget-pct';
+    noBudget.textContent = 'no budget set';
+    right.appendChild(noBudget);
+  }
+
+  const input = document.createElement('input');
+  input.type = 'number';
+  input.min = '0';
+  input.className = 'budget-input';
+  input.placeholder = 'kr/mo';
+  input.value = explicitMonthlyBudget || '';
+  input.addEventListener('change', () => setBudget(path, input.value));
+  right.appendChild(input);
+
+  return right;
+}
+
+function renderBudgetsUI() {
+  const wrap = document.getElementById('budget-tree-wrap');
+  wrap.innerHTML = '';
+
+  const monthCount = Math.max(visibleMonths().length, 1);
+  let totalBudget = 0;
+  let totalActual = 0;
+
+  categoryTree.forEach(entry => {
+    if (entry.key === 'Excluded') return; // budgets track spend, not salary/transfers
+
+    const monthlyBudget = effectiveMonthlyBudget(entry);
+    const rangeBudget = monthlyBudget ? monthlyBudget * monthCount : null;
+    const actual = actualSpendForPath(entry.key, true);
+    if (rangeBudget) totalBudget += rangeBudget;
+    totalActual += actual;
+
+    const row = document.createElement('div');
+    row.className = 'cat-tree-row';
+    const header = document.createElement('div');
+    header.className = 'cat-tree-header';
+    const nameSpan = document.createElement('span');
+    nameSpan.className = 'cat-tree-name';
+    nameSpan.textContent = entry.key;
+    header.appendChild(nameSpan);
+    header.appendChild(budgetRowRight(entry.key, budgets[entry.key] || null, actual, rangeBudget, !budgets[entry.key] && !!rangeBudget));
+    row.appendChild(header);
+
+    if (entry.subs && entry.subs.length) {
+      const subList = document.createElement('div');
+      subList.className = 'cat-tree-subs';
+      entry.subs.forEach(sub => {
+        const subPath = entry.key + ' > ' + sub;
+        const subMonthlyBudget = budgets[subPath] || null;
+        const subRangeBudget = subMonthlyBudget ? subMonthlyBudget * monthCount : null;
+        const subActual = actualSpendForPath(subPath, false);
+        const subRow = document.createElement('div');
+        subRow.className = 'cat-tree-sub-row';
+        const subName = document.createElement('span');
+        subName.textContent = sub;
+        subRow.appendChild(subName);
+        subRow.appendChild(budgetRowRight(subPath, subMonthlyBudget, subActual, subRangeBudget, false));
+        subList.appendChild(subRow);
+      });
+      row.appendChild(subList);
+    }
+
+    wrap.appendChild(row);
+  });
+
+  const totalRow = document.getElementById('budget-total-row');
+  totalRow.innerHTML = '';
+  const totalPct = totalBudget ? Math.round(totalActual / totalBudget * 100) : null;
+  [
+    { label: 'Total budget', value: totalBudget ? Math.round(totalBudget).toLocaleString() + ' kr' : '—' },
+    { label: 'Total actual', value: Math.round(totalActual).toLocaleString() + ' kr' },
+    { label: 'Of budget', value: totalPct !== null ? totalPct + '%' : '—' },
+  ].forEach(s => {
+    const el = document.createElement('div');
+    el.className = 'stat';
+    el.innerHTML = `<div class="label">${s.label}</div><div class="value">${s.value}</div>`;
+    totalRow.appendChild(el);
   });
 }
 
