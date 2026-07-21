@@ -166,6 +166,15 @@
     border-radius: 6px; padding: 4px 8px; font-size: 13px; text-align: right;
   }
 
+  .balance-grid-table { border-collapse: collapse; font-size: 13px; white-space: nowrap; }
+  .balance-grid-table th, .balance-grid-table td { padding: 6px 10px; border-bottom: 1px solid var(--border); text-align: right; }
+  .balance-grid-table th:first-child, .balance-grid-table td:first-child { text-align: left; position: sticky; left: 0; background: var(--panel); }
+  .balance-grid-table th { color: var(--text-dim); font-weight: 500; text-transform: uppercase; font-size: 11px; letter-spacing: 0.4px; }
+  .balance-input {
+    width: 100px; background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: 4px 8px; font-size: 13px; text-align: right;
+  }
+
   details.cat-group { border: 1px solid var(--border); border-radius: 8px; margin-bottom: 8px; overflow: hidden; }
   details.cat-group > summary {
     cursor: pointer; padding: 10px 12px; background: var(--panel-2);
@@ -290,6 +299,33 @@
       <div id="budget-tree-wrap"></div>
     </details>
 
+    <details class="card">
+      <summary>
+        <div style="display:flex; align-items:center; justify-content:space-between; width:100%;">
+          <h2 style="margin:0;">Net Worth</h2>
+          <button id="export-networth-chart-btn" class="btn-sm">Export chart</button>
+        </div>
+      </summary>
+      <p style="color: var(--text-dim); font-size: 13px; margin: 0 0 14px;">
+        Track savings/investment account balances over time, alongside mortgage interest and
+        salary (both computed automatically from your transactions — no extra entry needed).
+        Shows every month you have data for, independent of the date range selected above.
+      </p>
+      <div id="networth-chart-wrap" style="position:relative; height:340px;"><canvas id="networth-chart"></canvas></div>
+
+      <div style="margin: 20px 0 10px; font-size: 13px; font-weight: 600; color: var(--text);">Accounts</div>
+      <div id="account-list-wrap"></div>
+      <div style="margin-top: 10px;">
+        <button id="add-account-btn" class="btn-sm">+ Add account</button>
+      </div>
+
+      <div style="margin: 20px 0 10px; font-size: 13px; font-weight: 600; color: var(--text);">Monthly balances</div>
+      <div id="balance-grid-wrap"></div>
+      <div style="margin-top: 10px;">
+        <button id="add-balance-month-btn" class="btn-sm">+ Add month</button>
+      </div>
+    </details>
+
     <details class="card" open>
       <summary><h2>Import new transactions</h2></summary>
       <div class="format-row" id="format-row">
@@ -342,6 +378,8 @@ let overrides = {};
 let learnedLookup = {};
 let categoryTree = []; // live, user-editable taxonomy — see loadAllData() and the Categories card
 let budgets = {}; // categoryPath ("Top" or "Top > Sub") -> monthly budget amount — see the Budgets card
+let accountList = []; // user-editable list of savings/investment account names — see the Net Worth card
+let accountBalances = {}; // { month ("Mon-YY"): { accountName: balance } } — same month format as everything else
 let chartInstance = null;
 let selectedFormat = 'eurobonus';
 let pendingImport = null; // { results, unmatched, format }
@@ -398,8 +436,14 @@ window.onload = () => {
     e.stopPropagation(); // this button sits inside the collapsible card's <summary> — don't toggle it
     downloadChartPNG(savingsChartInstance, 'savings-chart.png');
   });
+  document.getElementById('export-networth-chart-btn').addEventListener('click', (e) => {
+    e.stopPropagation(); // this button sits inside the collapsible card's <summary> — don't toggle it
+    downloadChartPNG(netWorthChartInstance, 'net-worth-chart.png');
+  });
   document.getElementById('save-changes-btn').addEventListener('click', saveAllChanges);
   document.getElementById('add-category-btn').addEventListener('click', addCategory);
+  document.getElementById('add-account-btn').addEventListener('click', addAccount);
+  document.getElementById('add-balance-month-btn').addEventListener('click', addBalanceMonth);
 
   setupImportUI();
   // Deliberately no automatic/silent requestAccessToken() call here. Google Identity Services
@@ -682,6 +726,28 @@ async function loadAllData() {
       }
     }
 
+    if (fileIds['accounts.json']) {
+      accountList = JSON.parse(await downloadFile(fileIds['accounts.json']));
+    } else {
+      accountList = [];
+      try {
+        await createFileInFolder('accounts.json', JSON.stringify(accountList, null, 2));
+      } catch (e) {
+        console.error('Could not create accounts.json yet — will retry on next save.', e);
+      }
+    }
+
+    if (fileIds['account_balances.json']) {
+      accountBalances = JSON.parse(await downloadFile(fileIds['account_balances.json']));
+    } else {
+      accountBalances = {};
+      try {
+        await createFileInFolder('account_balances.json', JSON.stringify(accountBalances, null, 2));
+      } catch (e) {
+        console.error('Could not create account_balances.json yet — will retry on next save.', e);
+      }
+    }
+
     setStatus(`Loaded ${dataset.length} transactions.`);
     renderOverview();
 
@@ -713,6 +779,7 @@ async function loadAllData() {
 // ============================================================
 let drillState = { level: 'top', category: null }; // level: 'top' | 'sub' | 'merchant'
 let savingsChartInstance = null;
+let netWorthChartInstance = null;
 let rangeFilter = { from: null, to: null }; // month labels, inclusive
 
 function sortedMonthList() {
@@ -720,6 +787,16 @@ function sortedMonthList() {
   const monthOrder = {};
   dataset.forEach(i => { if (!(i.month in monthOrder)) monthOrder[i.month] = i.txn_date; });
   return months.sort((a, b) => monthOrder[a].localeCompare(monthOrder[b]));
+}
+
+const MONTH_ABBR = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+// Chronological sort key for a "Mon-YY" label, without needing a transaction to derive order from
+// (unlike sortedMonthList/monthOrder above) — needed for the Net Worth card, since a month can
+// have entered balance data with no transactions in it at all.
+function monthSortKey(label) {
+  const [abbr, yy] = label.split('-');
+  return parseInt(yy, 10) * 100 + MONTH_ABBR.indexOf(abbr);
 }
 
 function visibleMonths() {
@@ -801,6 +878,7 @@ function refreshViews() {
   renderSavingsChart();
   drawTransactionsTable();
   renderBudgetsUI();
+  renderNetWorthChart(); // mortgage-interest/salary lines are derived live from dataset
 }
 
 function renderStatRow() {
@@ -872,6 +950,9 @@ function renderOverview() {
   renderTransactionsBrowser();
   renderCategoriesUI();
   renderBudgetsUI();
+  renderAccountListUI();
+  renderBalanceGridUI();
+  renderNetWorthChart();
 }
 
 function renderSpendChart() {
@@ -1137,22 +1218,27 @@ function budgetContributionForSeries(label) {
 }
 
 function recomputeReferenceLines(chart) {
-  const trendDs = chart.data.datasets.find(d => d.label === 'Trend');
+  const trendDs = chart.data.datasets.find(d => d.label === 'Trend' || d.label === 'Trend (total savings)');
   const avgDs = chart.data.datasets.find(d => d.label === 'Average');
   const budgetDs = chart.data.datasets.find(d => d.label === 'Budget');
   if (!trendDs && !avgDs && !budgetDs) return;
 
+  // Whichever stack the chart's real bars share — 'spend' on the spend chart, 'balance' on the
+  // net worth chart's account bars. Reference lines (Trend/Average/Budget) always live on their
+  // own separate stack ids, so this reliably finds just the real bars either way.
+  const primaryStack = chart.data.datasets.some(d => d.stack === 'balance') ? 'balance' : 'spend';
+
   const bucketCount = chart.data.labels.length;
-  const spendData = Array.from({ length: bucketCount }, (_, idx) =>
+  const totalData = Array.from({ length: bucketCount }, (_, idx) =>
     chart.data.datasets.reduce((s, d, i) => {
-      if (d.stack !== 'spend' || !chart.isDatasetVisible(i)) return s;
+      if (d.stack !== primaryStack || !chart.isDatasetVisible(i)) return s;
       return s + (d.data[idx] || 0);
     }, 0)
   );
-  const avgValue = spendData.reduce((s, v) => s + v, 0) / (bucketCount || 1);
+  const avgValue = totalData.reduce((s, v) => s + v, 0) / (bucketCount || 1);
 
-  if (trendDs) trendDs.data = spendData;
-  if (avgDs) avgDs.data = spendData.map(() => avgValue);
+  if (trendDs) trendDs.data = totalData;
+  if (avgDs) avgDs.data = totalData.map(() => avgValue);
 
   if (budgetDs) {
     const monthlyBudgetSum = chart.data.datasets.reduce((s, d, i) => {
@@ -1174,11 +1260,12 @@ function legendDoubleClickHandler() {
   return (evt, legendItem, legend) => {
     const chart = legend.chart;
     const index = legendItem.datasetIndex;
-    // Trend/Average's *values* only depend on which real (stack:'spend') series are visible —
-    // showing/hiding/isolating Trend or Average itself must never feed back into recomputing
-    // them, or isolating Trend/Average (which, like isolating anything else, hides every other
-    // dataset including the real bars) would zero them out against their own now-hidden bars.
-    const clickedIsSpendSeries = chart.data.datasets[index].stack === 'spend';
+    // Trend/Average's *values* only depend on which real bars are visible — 'spend' series on
+    // the spend chart, 'balance' series (accounts) on the net worth chart. Showing/hiding/
+    // isolating a reference line itself must never feed back into recomputing them, or isolating
+    // one (which, like isolating anything else, hides every other dataset including the real
+    // bars) would zero it out against its own now-hidden bars.
+    const clickedIsPrimarySeries = chart.data.datasets[index].stack === 'spend' || chart.data.datasets[index].stack === 'balance';
 
     if (pendingTimer !== null && pendingIndex === index) {
       // Second click on the same item within the window: it's a double-click. Cancel the
@@ -1193,7 +1280,7 @@ function legendDoubleClickHandler() {
         if (onlyThisVisible || i === index) chart.show(i);
         else chart.hide(i);
       });
-      if (clickedIsSpendSeries) recomputeReferenceLines(chart);
+      if (clickedIsPrimarySeries) recomputeReferenceLines(chart);
       return;
     }
 
@@ -1207,7 +1294,7 @@ function legendDoubleClickHandler() {
       pendingIndex = null;
       if (chart.isDatasetVisible(index)) chart.hide(index);
       else chart.show(index);
-      if (clickedIsSpendSeries) recomputeReferenceLines(chart);
+      if (clickedIsPrimarySeries) recomputeReferenceLines(chart);
     }, DELAY);
   };
 }
@@ -1576,6 +1663,16 @@ async function saveAllChanges() {
       await updateFileContent(fileIds['budgets.json'], JSON.stringify(budgets, null, 2));
     } else {
       await createFileInFolder('budgets.json', JSON.stringify(budgets, null, 2));
+    }
+    if (fileIds['accounts.json']) {
+      await updateFileContent(fileIds['accounts.json'], JSON.stringify(accountList, null, 2));
+    } else {
+      await createFileInFolder('accounts.json', JSON.stringify(accountList, null, 2));
+    }
+    if (fileIds['account_balances.json']) {
+      await updateFileContent(fileIds['account_balances.json'], JSON.stringify(accountBalances, null, 2));
+    } else {
+      await createFileInFolder('account_balances.json', JSON.stringify(accountBalances, null, 2));
     }
     unsavedChanges = false;
     updateUnsavedBar();
@@ -1962,6 +2059,254 @@ function renderBudgetsUI() {
 }
 
 // ============================================================
+// NET WORTH: accounts, monthly balances, and the combined chart
+// ============================================================
+function addAccount() {
+  const name = (prompt('New account name (e.g. "Savings account", "ISK"):') || '').trim();
+  if (!name) return;
+  if (accountList.includes(name)) { showToast('That account already exists.', 'error'); return; }
+  accountList.push(name);
+  markUnsaved();
+  renderAccountListUI();
+  renderBalanceGridUI();
+  renderNetWorthChart();
+}
+
+function renameAccount(oldName) {
+  const newName = (prompt('Rename account:', oldName) || '').trim();
+  if (!newName || newName === oldName) return;
+  if (accountList.includes(newName)) { showToast('That account name is already in use.', 'error'); return; }
+  accountList = accountList.map(a => a === oldName ? newName : a);
+  Object.keys(accountBalances).forEach(month => {
+    if (accountBalances[month] && oldName in accountBalances[month]) {
+      accountBalances[month][newName] = accountBalances[month][oldName];
+      delete accountBalances[month][oldName];
+    }
+  });
+  markUnsaved();
+  renderAccountListUI();
+  renderBalanceGridUI();
+  renderNetWorthChart();
+}
+
+function deleteAccount(name) {
+  if (!confirm(`Delete account "${name}"? Its entered balances will be removed too.`)) return;
+  accountList = accountList.filter(a => a !== name);
+  Object.keys(accountBalances).forEach(month => {
+    if (accountBalances[month]) delete accountBalances[month][name];
+  });
+  markUnsaved();
+  renderAccountListUI();
+  renderBalanceGridUI();
+  renderNetWorthChart();
+}
+
+function renderAccountListUI() {
+  const wrap = document.getElementById('account-list-wrap');
+  wrap.innerHTML = '';
+  if (!accountList.length) {
+    const empty = document.createElement('div');
+    empty.style.cssText = 'color: var(--text-dim); font-size: 13px;';
+    empty.textContent = 'No accounts yet — add one to start tracking balances.';
+    wrap.appendChild(empty);
+    return;
+  }
+  accountList.forEach(name => {
+    const row = document.createElement('div');
+    row.className = 'cat-tree-row';
+    const header = document.createElement('div');
+    header.className = 'cat-tree-header';
+    const nameSpan = document.createElement('span');
+    nameSpan.className = 'cat-tree-name';
+    nameSpan.textContent = name;
+    const actions = document.createElement('span');
+    actions.className = 'cat-tree-actions';
+    const renameBtn = document.createElement('button');
+    renameBtn.textContent = 'Rename';
+    renameBtn.onclick = () => renameAccount(name);
+    const deleteBtn = document.createElement('button');
+    deleteBtn.textContent = 'Delete';
+    deleteBtn.onclick = () => deleteAccount(name);
+    actions.append(renameBtn, deleteBtn);
+    header.append(nameSpan, actions);
+    row.appendChild(header);
+    wrap.appendChild(row);
+  });
+}
+
+// Union of months with transactions and months with entered balance data — a month can have
+// balance data with no transactions at all (e.g. history predating this app), so this can't
+// just reuse sortedMonthList() alone.
+function netWorthMonths() {
+  const months = new Set([...sortedMonthList(), ...Object.keys(accountBalances)]);
+  return [...months].sort((a, b) => monthSortKey(a) - monthSortKey(b));
+}
+
+function addBalanceMonth() {
+  const raw = (prompt('Add a month (format: Mon-YY, e.g. "Jan-26"):') || '').trim();
+  if (!raw) return;
+  const parts = raw.split('-');
+  const abbr = parts[0] ? parts[0].charAt(0).toUpperCase() + parts[0].slice(1, 3).toLowerCase() : '';
+  const yy = parts[1] || '';
+  if (parts.length !== 2 || !MONTH_ABBR.includes(abbr) || !/^\d{2}$/.test(yy)) {
+    showToast('Use the format "Mon-YY", e.g. "Jan-26".', 'error');
+    return;
+  }
+  const normalized = abbr + '-' + yy;
+  if (!accountBalances[normalized]) accountBalances[normalized] = {};
+  markUnsaved();
+  renderBalanceGridUI();
+  renderNetWorthChart();
+}
+
+function setBalance(month, account, rawValue) {
+  const amount = parseFloat(rawValue);
+  if (!accountBalances[month]) accountBalances[month] = {};
+  if (!rawValue || isNaN(amount)) delete accountBalances[month][account];
+  else accountBalances[month][account] = amount;
+  markUnsaved();
+  renderNetWorthChart();
+}
+
+function renderBalanceGridUI() {
+  const wrap = document.getElementById('balance-grid-wrap');
+  wrap.innerHTML = '';
+  if (!accountList.length) {
+    const empty = document.createElement('div');
+    empty.style.cssText = 'color: var(--text-dim); font-size: 13px;';
+    empty.textContent = 'Add an account above to start entering balances.';
+    wrap.appendChild(empty);
+    return;
+  }
+
+  const months = netWorthMonths().slice().reverse(); // most recent first, easiest to keep up to date
+  const scrollWrap = document.createElement('div');
+  scrollWrap.className = 'table-scroll';
+  const table = document.createElement('table');
+  table.className = 'balance-grid-table';
+  const thead = document.createElement('thead');
+  const headRow = document.createElement('tr');
+  headRow.innerHTML = `<th>Month</th>` + accountList.map(a => `<th>${escapeHtml(a)}</th>`).join('');
+  thead.appendChild(headRow);
+  table.appendChild(thead);
+  const tbody = document.createElement('tbody');
+  months.forEach(month => {
+    const tr = document.createElement('tr');
+    const monthTd = document.createElement('td');
+    monthTd.textContent = month;
+    tr.appendChild(monthTd);
+    accountList.forEach(acct => {
+      const td = document.createElement('td');
+      const input = document.createElement('input');
+      input.type = 'number';
+      input.className = 'balance-input';
+      input.placeholder = 'kr';
+      const value = accountBalances[month] && accountBalances[month][acct];
+      input.value = (value || value === 0) ? value : '';
+      input.addEventListener('change', () => setBalance(month, acct, input.value));
+      td.appendChild(input);
+      tr.appendChild(td);
+    });
+    tbody.appendChild(tr);
+  });
+  table.appendChild(tbody);
+  scrollWrap.appendChild(table);
+  wrap.appendChild(scrollWrap);
+}
+
+function renderNetWorthChart() {
+  const months = netWorthMonths();
+  const datasets = accountList.map((acct, idx) => ({
+    label: acct,
+    data: months.map(m => (accountBalances[m] && accountBalances[m][acct]) || 0),
+    backgroundColor: colorForIndex(idx),
+    stack: 'balance',
+    type: 'bar',
+    yAxisID: 'y'
+  }));
+
+  // Trend: total balance across whatever's currently visible via the legend — same "sum of
+  // visible stack" idea as the spend chart's Trend/Average/Budget lines (recomputeReferenceLines
+  // handles both). Unlike Average/Budget, this varies month to month rather than being flat, so
+  // it gets real point markers (hoverable/tooltippable) instead of a legend-text value.
+  const trendData = months.map((m, idx) => datasets.reduce((s, d) => s + (d.data[idx] || 0), 0));
+  datasets.push({
+    label: 'Trend (total savings)',
+    data: trendData,
+    type: 'line',
+    stack: 'trend-line',
+    borderColor: '#e8eaed',
+    backgroundColor: '#e8eaed',
+    borderWidth: 2,
+    pointRadius: 3,
+    tension: 0.15,
+    fill: false,
+    yAxisID: 'y'
+  });
+
+  // Mortgage rollover (interest) and salary are both already tracked as transactions elsewhere
+  // in this app — computed live here, no separate manual entry needed for either. Both vary
+  // month to month, so both get hoverable point markers too.
+  const mortgageData = months.map(m =>
+    dataset.filter(i => i.month === m && i.category === 'Housing/Mortgage > Interest').reduce((s, i) => s + i.amount, 0)
+  );
+  datasets.push({
+    label: 'Mortgage rollover (interest)',
+    data: mortgageData,
+    type: 'line',
+    stack: 'mortgage-line',
+    borderColor: '#ff8a80',
+    backgroundColor: '#ff8a80',
+    borderWidth: 2,
+    pointRadius: 3,
+    tension: 0.15,
+    fill: false,
+    yAxisID: 'y1'
+  });
+
+  const salaryData = months.map(m => {
+    const rows = dataset.filter(i => i.month === m && i.merchant === 'Lön (salary)');
+    return rows.length ? rows.reduce((s, i) => s + i.amount, 0) : null;
+  });
+  datasets.push({
+    label: 'Lön (salary)',
+    data: salaryData,
+    type: 'line',
+    stack: 'salary-line',
+    borderColor: '#7ee8b8',
+    backgroundColor: '#7ee8b8',
+    borderWidth: 2,
+    pointRadius: 3,
+    spanGaps: false,
+    fill: false,
+    yAxisID: 'y1'
+  });
+
+  const chartData = { labels: months, datasets };
+  const chartOptions = {
+    responsive: true,
+    maintainAspectRatio: false,
+    scales: {
+      x: { stacked: true, ticks: { color: '#9aa4b2' }, grid: { color: '#2a303a' } },
+      y: { stacked: true, position: 'left', ticks: { color: '#9aa4b2' }, grid: { color: '#2a303a' } },
+      y1: { position: 'right', ticks: { color: '#9aa4b2' }, grid: { drawOnChartArea: false } }
+    },
+    plugins: {
+      legend: { labels: { color: '#e8eaed', boxWidth: 12, font: { size: 11 } }, onClick: legendDoubleClickHandler() }
+    }
+  };
+
+  if (netWorthChartInstance) {
+    netWorthChartInstance.data = chartData;
+    netWorthChartInstance.options = chartOptions;
+    netWorthChartInstance.update();
+  } else {
+    const ctx = document.getElementById('networth-chart').getContext('2d');
+    netWorthChartInstance = new Chart(ctx, { type: 'bar', data: chartData, options: chartOptions });
+  }
+}
+
+// ============================================================
 // IMPORT UI
 // ============================================================
 function setupImportUI() {
@@ -2262,9 +2607,8 @@ async function saveImport() {
 }
 
 function monthLabel(dateStr) {
-  const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
   const [y, m] = dateStr.split('-');
-  return months[parseInt(m,10)-1] + '-' + y.slice(2);
+  return MONTH_ABBR[parseInt(m,10)-1] + '-' + y.slice(2);
 }
 </script>
 </body>
