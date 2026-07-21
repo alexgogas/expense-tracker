@@ -324,6 +324,20 @@
       <div style="margin-top: 10px;">
         <button id="add-balance-month-btn" class="btn-sm">+ Add month</button>
       </div>
+
+      <div style="margin: 20px 0 10px; font-size: 13px; font-weight: 600; color: var(--text);">Import balance history</div>
+      <p style="color: var(--text-dim); font-size: 13px; margin: 0 0 10px;">
+        Import a Nordea account export (.csv) to fill in month-end balances automatically instead
+        of typing them in one by one — works for any account export with a "Saldo" column, not
+        just savings accounts.
+      </p>
+      <div class="format-row">
+        <select id="balance-import-account-select" class="cat-select"><option value="">Select an account…</option></select>
+      </div>
+      <div class="drop-zone" id="balance-drop-zone">
+        <input type="file" id="balance-file-input" accept=".csv">
+        <div id="balance-drop-label">Drop a Nordea account .csv here, or click to choose</div>
+      </div>
     </details>
 
     <details class="card" open>
@@ -446,6 +460,7 @@ window.onload = () => {
   document.getElementById('add-balance-month-btn').addEventListener('click', addBalanceMonth);
 
   setupImportUI();
+  setupBalanceImportUI();
   // Deliberately no automatic/silent requestAccessToken() call here. Google Identity Services
   // doesn't support silent reauthorization — a popup is shown by design even when the user has
   // already granted access, "to improve user security and awareness" (Google's own wording).
@@ -2102,6 +2117,14 @@ function deleteAccount(name) {
 }
 
 function renderAccountListUI() {
+  // Keep the balance-import account picker in sync with the account list, preserving the
+  // current selection if it's still valid.
+  const importSelect = document.getElementById('balance-import-account-select');
+  const prevSelected = importSelect.value;
+  importSelect.innerHTML = '<option value="">Select an account…</option>' +
+    accountList.map(a => `<option value="${escapeHtml(a)}">${escapeHtml(a)}</option>`).join('');
+  if (accountList.includes(prevSelected)) importSelect.value = prevSelected;
+
   const wrap = document.getElementById('account-list-wrap');
   wrap.innerHTML = '';
   if (!accountList.length) {
@@ -2303,6 +2326,120 @@ function renderNetWorthChart() {
   } else {
     const ctx = document.getElementById('networth-chart').getContext('2d');
     netWorthChartInstance = new Chart(ctx, { type: 'bar', data: chartData, options: chartOptions });
+  }
+}
+
+// ============================================================
+// BALANCE HISTORY IMPORT (Net Worth card)
+// ============================================================
+// Parses any Nordea account export with a "Saldo" (balance) column — not specific to savings
+// accounts, since checking/ISK-linked/loan account exports share the same shape. Only pulls the
+// date and running balance; unlike the transaction-import parsers, categorization is irrelevant
+// here — the goal is month-end balances, not spend tracking.
+function parseAccountBalanceCSV(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        let text = e.target.result;
+        if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1); // strip BOM
+        const lines = text.split(/\r?\n/).filter(l => l.trim());
+        const header = lines[0].split(';');
+        const idx = { date: header.indexOf('Bokföringsdag'), saldo: header.indexOf('Saldo') };
+        if (idx.date === -1 || idx.saldo === -1) {
+          reject(new Error('Missing "Bokföringsdag"/"Saldo" columns — is this a Nordea account export?'));
+          return;
+        }
+        const rows = [];
+        for (let i = 1; i < lines.length; i++) {
+          const cols = lines[i].split(';');
+          if (cols.length < header.length) continue;
+          const dateStr = (cols[idx.date] || '').trim().replace(/\//g, '-');
+          const saldoStr = (cols[idx.saldo] || '').replace(/\s/g, '').replace(',', '.');
+          const balance = parseFloat(saldoStr);
+          if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr) || isNaN(balance)) continue;
+          rows.push({ txn_date: dateStr, balance });
+        }
+        resolve(rows);
+      } catch (err) { reject(err); }
+    };
+    reader.onerror = reject;
+    reader.readAsText(file, 'utf-8');
+  });
+}
+
+// For each calendar month present, keeps the balance from that month's latest-dated row — the
+// "as of the last known transaction that month" snapshot, not a sum or average across the month.
+function extractMonthEndBalances(rows) {
+  const byMonth = {};
+  rows.forEach(r => {
+    const month = monthLabel(r.txn_date);
+    if (!byMonth[month] || r.txn_date > byMonth[month].date) {
+      byMonth[month] = { date: r.txn_date, balance: r.balance };
+    }
+  });
+  const result = {};
+  Object.keys(byMonth).forEach(m => { result[m] = byMonth[m].balance; });
+  return result;
+}
+
+function setupBalanceImportUI() {
+  const dropZone = document.getElementById('balance-drop-zone');
+  const fileInput = document.getElementById('balance-file-input');
+
+  dropZone.addEventListener('click', () => fileInput.click());
+  dropZone.addEventListener('dragover', (e) => { e.preventDefault(); dropZone.classList.add('dragover'); });
+  dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
+  dropZone.addEventListener('drop', (e) => {
+    e.preventDefault();
+    dropZone.classList.remove('dragover');
+    if (e.dataTransfer.files.length) handleBalanceFile(e.dataTransfer.files[0]);
+  });
+  fileInput.addEventListener('change', (e) => {
+    if (e.target.files.length) handleBalanceFile(e.target.files[0]);
+  });
+}
+
+async function handleBalanceFile(file) {
+  const account = document.getElementById('balance-import-account-select').value;
+  if (!account) {
+    showToast('Select which account these balances belong to first.', 'error');
+    return;
+  }
+  setStatus('Reading balance history…');
+  try {
+    const rows = await parseAccountBalanceCSV(file);
+    const monthly = extractMonthEndBalances(rows);
+    const months = Object.keys(monthly).sort((a, b) => monthSortKey(a) - monthSortKey(b));
+    setStatus('');
+
+    if (!months.length) {
+      showToast('No usable rows found in that file.', 'error');
+      return;
+    }
+
+    const overlapping = months.filter(m => accountBalances[m] && (account in accountBalances[m]));
+    const overwriteNote = overlapping.length
+      ? ` This will overwrite ${overlapping.length} existing entr${overlapping.length === 1 ? 'y' : 'ies'} for "${account}".`
+      : '';
+    const ok = confirm(
+      `Import ${months.length} month-end balance${months.length === 1 ? '' : 's'} for "${account}" ` +
+      `(${months[0]} to ${months[months.length - 1]})?${overwriteNote}`
+    );
+    if (!ok) return;
+
+    months.forEach(m => {
+      if (!accountBalances[m]) accountBalances[m] = {};
+      accountBalances[m][account] = monthly[m];
+    });
+    markUnsaved();
+    renderBalanceGridUI();
+    renderNetWorthChart();
+    showToast(`Imported ${months.length} month${months.length === 1 ? '' : 's'} of balances for "${account}".`, 'success');
+  } catch (err) {
+    setStatus('');
+    showToast('Import failed: ' + err.message, 'error');
+    console.error(err);
   }
 }
 
