@@ -151,6 +151,55 @@ function parsePersonkontoRows(rows) {
   return out;
 }
 
+function parseSparkontoRows(rows) {
+  // rows: array of {Bokforingsdag, Belopp, Rubrik} — same shape as Personkonto's raw CSV rows
+  // (both are Nordea account exports with identical columns). Rubrik patterns below are the
+  // user's own documented conventions for this specific Sparkonto (mortgage loan tranches,
+  // fixed-term deposit account, ISK, and an external-bank savings arrangement) — see the
+  // "Nordea CSV parsing conventions" reference memory for the full writeup these came from.
+  const out = [];
+  for (const row of rows) {
+    const rubrik = String(row.Rubrik || '').trim();
+    const amount = parseFloat(row.Belopp);
+    let merchant = rubrik;
+    let category = null;
+
+    if (/^Omsättning lån/i.test(rubrik)) {
+      // Full loan rollover per tranche — this can't be cleanly split into interest vs.
+      // amortization from this data alone, so it's filed at the bare Housing/Mortgage category
+      // (no sub), alongside — not replacing — any Interest/Amortization entries recorded
+      // elsewhere (e.g. from a Personkonto import).
+      category = 'Housing/Mortgage';
+    } else if (/^(Ny|Förfall|Prel\.skatt|Ränta) FASTRÄNTEPLACERING/i.test(rubrik)) {
+      merchant = 'Fasträntplacering';
+      category = 'Excluded'; // internal transfer to/from an owned fixed-term deposit, not spend
+    } else if (/^(Ränta|Preliminär skatt) \d{4}$/i.test(rubrik)) {
+      category = 'Excluded'; // account-level annual interest/tax entries, not spend
+    } else if (rubrik.includes('4716 74 80297')) {
+      merchant = 'ISK transfer';
+      category = 'Excluded'; // moving to another owned asset (ISK), not spend
+    } else if (rubrik.includes('9750 14 57184') || /^UTTAG NML/i.test(rubrik)) {
+      merchant = 'External savings (9750 14 57184)';
+      category = 'Excluded'; // temporarily held at another bank, still owned
+    } else if (/^Överföring 3204 01 72718/i.test(rubrik)) {
+      category = 'Excluded'; // transfer to/from the linked Personkonto
+    } else if (/^Slutlikvid/i.test(rubrik) || rubrik === 'Insättning') {
+      category = 'Excluded'; // one-off property purchase settlement
+    }
+    // Uttag / Uttag utland / anything else unrecognized: leave category null so it surfaces for
+    // manual review instead of guessing — these can be genuine spend (e.g. foreign ATM cash).
+
+    out.push({
+      txn_date: row.Bokforingsdag,
+      merchant,
+      amount: Math.abs(amount),
+      card: 'Sparkonto',
+      _forcedCategory: category
+    });
+  }
+  return out;
+}
+
 // ---------- Full pipeline: parse + categorize + merge ----------
 // Guards against summary/footer/total rows in a bank export leaking through as fake
 // transactions — e.g. a trailing "Totalt belopp" row whose amount column happens to hold a
@@ -168,6 +217,7 @@ function processImport(rawRows, format, aliases, overrides, learnedLookup) {
   if (format === 'eurobonus') parsed = parseEuroBonusRows(rawRows);
   else if (format === 'amex') parsed = parseAmexRows(rawRows);
   else if (format === 'personkonto') parsed = parsePersonkontoRows(rawRows);
+  else if (format === 'sparkonto') parsed = parseSparkontoRows(rawRows);
   else throw new Error('Unknown format: ' + format);
 
   parsed = parsed.filter(isValidParsedRow);
@@ -200,7 +250,7 @@ function processImport(rawRows, format, aliases, overrides, learnedLookup) {
 if (typeof module !== 'undefined') {
   module.exports = {
     CATEGORY_TREE, LEAF_CATEGORIES, categorizeMerchant, processImport, isValidParsedRow,
-    parseEuroBonusRows, parseAmexRows, parsePersonkontoRows, generateLoanEntries
+    parseEuroBonusRows, parseAmexRows, parsePersonkontoRows, parseSparkontoRows, generateLoanEntries
   };
 }
 

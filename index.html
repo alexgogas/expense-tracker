@@ -346,6 +346,7 @@
         <div class="format-pill active" data-format="eurobonus">SAS EuroBonus (.xlsx)</div>
         <div class="format-pill" data-format="amex">SAS Amex (.xlsx)</div>
         <div class="format-pill" data-format="personkonto">Nordea Personkonto (.csv)</div>
+        <div class="format-pill" data-format="sparkonto">Nordea Sparkonto (.csv)</div>
       </div>
       <div class="drop-zone" id="drop-zone">
         <input type="file" id="file-input" accept=".xlsx,.csv">
@@ -2267,14 +2268,20 @@ function renderNetWorthChart() {
     yAxisID: 'y'
   });
 
-  // Mortgage rollover (interest) and salary are both already tracked as transactions elsewhere
-  // in this app — computed live here, no separate manual entry needed for either. Both vary
-  // month to month, so both get hoverable point markers too.
+  // Mortgage cost and salary are both already tracked as transactions elsewhere in this app —
+  // computed live here, no separate manual entry needed for either. Both vary month to month,
+  // so both get hoverable point markers too. Mortgage cost covers loan interest/amortization
+  // only, not Utilities (a separate flat bill, not a loan cost): the bare "Housing/Mortgage"
+  // category (Sparkonto's full per-tranche rollover, which can't be split into interest vs.
+  // amortization) plus Personkonto's manually-categorized "Interest"/"Amortization" entries.
+  const MORTGAGE_COST_CATEGORIES = new Set([
+    'Housing/Mortgage', 'Housing/Mortgage > Interest', 'Housing/Mortgage > Amortization'
+  ]);
   const mortgageData = months.map(m =>
-    dataset.filter(i => i.month === m && i.category === 'Housing/Mortgage > Interest').reduce((s, i) => s + i.amount, 0)
+    dataset.filter(i => i.month === m && MORTGAGE_COST_CATEGORIES.has(i.category)).reduce((s, i) => s + i.amount, 0)
   );
   datasets.push({
-    label: 'Mortgage rollover (interest)',
+    label: 'Mortgage cost',
     data: mortgageData,
     type: 'line',
     stack: 'mortgage-line',
@@ -2453,7 +2460,7 @@ function setupImportUI() {
       pill.classList.add('active');
       selectedFormat = pill.dataset.format;
       const label = document.getElementById('drop-label');
-      const ext = selectedFormat === 'personkonto' ? '.csv' : '.xlsx';
+      const ext = (selectedFormat === 'personkonto' || selectedFormat === 'sparkonto') ? '.csv' : '.xlsx';
       document.getElementById('file-input').accept = ext;
       label.textContent = `Drop a ${ext} file here, or click to choose`;
     });
@@ -2483,7 +2490,7 @@ async function handleFile(file) {
   setStatus('Reading file…');
   try {
     let rawRows;
-    if (selectedFormat === 'personkonto') {
+    if (selectedFormat === 'personkonto' || selectedFormat === 'sparkonto') {
       rawRows = await parsePersonkontoCSV(file);
     } else {
       rawRows = await parseXlsx(file, selectedFormat);
