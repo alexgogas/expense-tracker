@@ -159,10 +159,8 @@
   .budget-row-right { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
   .budget-actual { font-size: 12px; color: var(--text-dim); white-space: nowrap; }
   .budget-bar-wrap { width: 90px; height: 8px; background: var(--panel-2); border-radius: 4px; overflow: hidden; flex-shrink: 0; }
-  .budget-bar { display: block; height: 100%; border-radius: 4px; background: var(--accent-2); }
-  .budget-bar.over { background: var(--danger); }
-  .budget-pct { font-size: 12px; white-space: nowrap; min-width: 90px; color: var(--text-dim); }
-  .budget-pct.over { color: var(--danger); }
+  .budget-bar { display: block; height: 100%; border-radius: 4px; }
+  .budget-pct { font-size: 12px; white-space: nowrap; min-width: 90px; }
   .budget-input {
     width: 80px; background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
     border-radius: 6px; padding: 4px 8px; font-size: 13px; text-align: right;
@@ -227,6 +225,11 @@
 
   <div id="app-content" class="hidden">
 
+    <div id="unsaved-changes-bar" class="hidden">
+      <span id="unsaved-changes-label"></span>
+      <button class="primary btn-sm" id="save-changes-btn">Save to Drive</button>
+    </div>
+
     <details class="card" open>
       <summary><h2>Overview</h2></summary>
       <div id="status-line"></div>
@@ -259,10 +262,6 @@
       <div class="format-row">
         <select id="txn-category-filter" class="cat-select"><option value="">All categories</option></select>
         <select id="txn-card-filter" class="cat-select"><option value="">All cards</option></select>
-      </div>
-      <div id="unsaved-changes-bar" class="hidden">
-        <span id="unsaved-changes-label"></span>
-        <button class="primary btn-sm" id="save-changes-btn">Save to Drive</button>
       </div>
       <div id="txn-table-wrap"></div>
     </details>
@@ -835,6 +834,29 @@ function leafCategories() {
   return leaves;
 }
 
+// The list of subcategory labels to show for a drilled-in category, folding in an "Other"
+// bucket for transactions filed at the bare top-level category (no subcategory at all) — merged
+// into an existing declared "Other" sub if the category already has one, rather than creating a
+// second, ambiguously-labeled bucket. Returns { subs }.
+function subcategoryListWithOther(cat, rows) {
+  const entry = categoryTree.find(c => c.key === cat);
+  const hasDeclaredOther = entry.subs.includes('Other');
+  const hasNoSubRows = rows.some(i => i.category === cat);
+  const subs = (hasDeclaredOther || !hasNoSubRows) ? entry.subs : [...entry.subs, 'Other'];
+  return { subs };
+}
+
+// Rows belonging to a "cat > sub" bucket. For sub === "Other" this always also folds in
+// transactions filed with no subcategory at all (whether "Other" is a real declared
+// subcategory of `cat` or just the synthetic placeholder for those no-sub rows) instead of
+// silently excluding them.
+function rowsForSubcategoryBucket(rows, cat, sub) {
+  if (sub === 'Other') {
+    return rows.filter(i => i.category === cat || i.category === cat + ' > Other');
+  }
+  return rows.filter(i => i.category === cat + ' > ' + sub);
+}
+
 function renderOverview() {
   drillState = { level: 'top', category: null };
   unsavedChanges = false;
@@ -874,11 +896,10 @@ function renderSpendChart() {
     }));
   } else if (drillState.level === 'sub') {
     const cat = drillState.category;
-    const entry = categoryTree.find(c => c.key === cat);
-    const subs = entry.subs;
+    const { subs } = subcategoryListWithOther(cat, rows);
     datasets = subs.map((sub, idx) => ({
       label: sub,
-      data: buckets.map(b => rows.filter(i => bucketOf(i) === b && i.category === cat + ' > ' + sub).reduce((s, i) => s + i.amount, 0)),
+      data: buckets.map(b => rowsForSubcategoryBucket(rows, cat, sub).filter(i => bucketOf(i) === b).reduce((s, i) => s + i.amount, 0)),
       backgroundColor: colorForIndex(idx),
       stack: 'spend'
     }));
@@ -970,7 +991,26 @@ function renderSpendChart() {
         y: { stacked: true, ticks: { color: '#9aa4b2' }, grid: { color: '#2a303a' } }
       },
       plugins: {
-        legend: { labels: { color: '#e8eaed', boxWidth: 12, font: { size: 11 } }, onClick: legendDoubleClickHandler() },
+        legend: {
+          labels: {
+            color: '#e8eaed', boxWidth: 12, font: { size: 11 },
+            // Average and Budget are flat reference lines drawn with pointRadius:0 (no marker to
+            // hover), so they never get a tooltip. Show their value directly in the legend text
+            // instead — cheaper than making a hoverable invisible point work, and always visible
+            // rather than only on hover.
+            generateLabels: (chart) => {
+              const items = Chart.defaults.plugins.legend.labels.generateLabels(chart);
+              items.forEach(item => {
+                const ds = chart.data.datasets[item.datasetIndex];
+                if ((ds.label === 'Average' || ds.label === 'Budget') && ds.data.length) {
+                  item.text = `${ds.label}: ${Math.round(ds.data[0]).toLocaleString()} kr`;
+                }
+              });
+              return items;
+            }
+          },
+          onClick: legendDoubleClickHandler()
+        },
         tooltip: {
           callbacks: {
             afterBody: (items) => {
@@ -981,8 +1021,8 @@ function renderSpendChart() {
               const bucket = buckets[items[0].dataIndex];
               const cat = drillState.category;
               const totals = {};
-              rangeFilteredDataset()
-                .filter(i => bucketOf(i) === bucket && i.category === cat + ' > ' + sub)
+              rowsForSubcategoryBucket(rangeFilteredDataset(), cat, sub)
+                .filter(i => bucketOf(i) === bucket)
                 .forEach(i => { totals[i.merchant] = (totals[i.merchant] || 0) + i.amount; });
               const top3 = Object.entries(totals).sort((a, b) => b[1] - a[1]).slice(0, 3);
               if (!top3.length) return [];
@@ -1026,9 +1066,9 @@ function renderMerchantSummary(rows, cat) {
   } else if (drillState.level === 'sub') {
     // Top merchants per subcategory, aggregated across every month in the selected range
     // (not just whichever month is hovered in the chart tooltip).
-    const entry = categoryTree.find(c => c.key === cat);
-    entry.subs.forEach(sub => {
-      const subRows = rows.filter(i => i.category === cat + ' > ' + sub);
+    const { subs } = subcategoryListWithOther(cat, rows);
+    subs.forEach(sub => {
+      const subRows = rowsForSubcategoryBucket(rows, cat, sub);
       if (!subRows.length) return;
       const heading = document.createElement('div');
       heading.style.cssText = 'margin: 16px 0 4px; font-size: 13px; font-weight: 600; color: var(--text);';
@@ -1363,44 +1403,60 @@ function drawTransactionsTable() {
   wrap.appendChild(summary);
 
   const monthCount = Math.max(visibleMonths().length, 1);
-  topEntries.forEach(([top, topRows]) => { wrap.appendChild(renderCategoryGroup(top, topRows, grandTotal, monthCount, openKeys)); });
+  const totalIncome = rows.filter(i => i.merchant === 'Lön (salary)').reduce((s, i) => s + i.amount, 0);
+  topEntries.forEach(([top, topRows]) => { wrap.appendChild(renderCategoryGroup(top, topRows, grandTotal, monthCount, openKeys, totalIncome)); });
 }
 
-function groupMeta(rows, grandTotal, isExcluded, monthCount) {
+function groupMeta(rows, grandTotal, isExcluded, monthCount, totalIncome, monthlyBudget) {
   const subtotal = rows.reduce((s, i) => s + i.amount, 0);
   const countTxt = `${rows.length.toLocaleString()} txn${rows.length === 1 ? '' : 's'}`;
   const amountTxt = `${Math.round(subtotal).toLocaleString()} kr`;
   const avgTxt = `${Math.round(subtotal / monthCount).toLocaleString()} kr/mo avg`;
   if (isExcluded) return `${countTxt} &middot; excluded from totals &middot; ${amountTxt}`;
-  const pct = grandTotal ? (subtotal / grandTotal * 100).toFixed(1) : '0.0';
-  return `${countTxt} &middot; ${pct}% &middot; ${amountTxt} &middot; ${avgTxt}`;
+
+  const parts = [countTxt, `${grandTotal ? (subtotal / grandTotal * 100).toFixed(1) : '0.0'}% of spend`, amountTxt, avgTxt];
+  if (totalIncome) parts.push(`${(subtotal / totalIncome * 100).toFixed(1)}% of income`);
+  if (monthlyBudget) {
+    const rangeBudget = monthlyBudget * monthCount;
+    if (rangeBudget) parts.push(`${(subtotal / rangeBudget * 100).toFixed(1)}% of budget`);
+  }
+  return parts.join(' &middot; ');
 }
 
-function renderCategoryGroup(top, topRows, grandTotal, monthCount, openKeys) {
+function renderCategoryGroup(top, topRows, grandTotal, monthCount, openKeys, totalIncome) {
   const details = document.createElement('details');
   details.className = 'cat-group';
   details.dataset.groupKey = top;
   if (openKeys && openKeys.has(top)) details.open = true;
   const summary = document.createElement('summary');
-  summary.innerHTML = `<span><span class="caret">&#9656;</span> <span class="name">${escapeHtml(top)}</span></span><span class="meta">${groupMeta(topRows, grandTotal, top === 'Excluded', monthCount)}</span>`;
+  const topEntry = categoryTree.find(c => c.key === top);
+  const topMonthlyBudget = topEntry ? effectiveMonthlyBudget(topEntry) : null;
+  summary.innerHTML = `<span><span class="caret">&#9656;</span> <span class="name">${escapeHtml(top)}</span></span><span class="meta">${groupMeta(topRows, grandTotal, top === 'Excluded', monthCount, totalIncome, topMonthlyBudget)}</span>`;
   details.appendChild(summary);
 
   const bySub = {};
-  const noSubRows = [];
   topRows.forEach(r => {
     const sub = r.category.split(' > ')[1];
     if (sub) (bySub[sub] = bySub[sub] || []).push(r);
-    else noSubRows.push(r);
   });
+  const hasRealSubs = Object.keys(bySub).length > 0;
+  // Rows filed directly under the top category (no subcategory) still need somewhere to render
+  // when this category ALSO has other, genuinely subcategorized transactions — they used to just
+  // vanish here, counted in the header total but shown nowhere. Fold them into "Other", merging
+  // with an existing declared "Other" sub if there is one, rather than adding a second,
+  // ambiguously-labeled bucket. But a purely flat category (no subcategorized transactions at
+  // all, e.g. Groceries) should keep rendering as a flat list, not get wrapped in a redundant
+  // single "Other" bucket around literally everything.
+  if (hasRealSubs) {
+    const noSubRows = topRows.filter(r => !r.category.split(' > ')[1]);
+    if (noSubRows.length) (bySub['Other'] = bySub['Other'] || []).push(...noSubRows);
+  }
   const hasSubs = Object.keys(bySub).length > 0;
 
   if (hasSubs) {
     const subEntries = Object.entries(bySub).sort((a, b) =>
       b[1].reduce((s, i) => s + i.amount, 0) - a[1].reduce((s, i) => s + i.amount, 0)
     );
-    // Rows filed directly under the top category (no subcategory) still need somewhere to
-    // render — they used to just vanish here, counted in the header total but shown nowhere.
-    if (noSubRows.length) subEntries.push(['(No subcategory)', noSubRows]);
     subEntries.forEach(([sub, subRows]) => {
       const subDetails = document.createElement('details');
       subDetails.className = 'cat-group sub-group';
@@ -1408,7 +1464,8 @@ function renderCategoryGroup(top, topRows, grandTotal, monthCount, openKeys) {
       subDetails.dataset.groupKey = subKey;
       if (openKeys && openKeys.has(subKey)) subDetails.open = true;
       const subSummary = document.createElement('summary');
-      subSummary.innerHTML = `<span><span class="caret">&#9656;</span> <span class="name">${escapeHtml(sub)}</span></span><span class="meta">${groupMeta(subRows, grandTotal, false, monthCount)}</span>`;
+      const subMonthlyBudget = budgets[subKey] || null;
+      subSummary.innerHTML = `<span><span class="caret">&#9656;</span> <span class="name">${escapeHtml(sub)}</span></span><span class="meta">${groupMeta(subRows, grandTotal, false, monthCount, totalIncome, subMonthlyBudget)}</span>`;
       subDetails.appendChild(subSummary);
       subDetails.appendChild(transactionsTable(subRows));
       details.appendChild(subDetails);
@@ -1618,6 +1675,56 @@ function deleteSubcategory(topKey, sub) {
   renderBudgetsUI();
 }
 
+// A merge target can be any leaf category ("Top" for flat, "Top > Sub" for a subcategory) OR a
+// bare top-level name even if it currently has subs — the app already handles transactions
+// filed with no subcategory gracefully (folded into "Other" for display), so that's a
+// legitimate destination, not just leaves.
+function validMergeTargets() {
+  return [...new Set([...leafCategories(), ...categoryTree.map(c => c.key)])];
+}
+
+// Prompts for a merge target, validates it, and confirms — used by both merge functions below.
+// Returns the target path, or null if the user canceled/gave an invalid target.
+function promptMergeTarget(sourcePath, count) {
+  const target = (prompt(`Merge "${sourcePath}" into which category? Type the exact name, e.g. "Housing/Mortgage" or "Housing/Mortgage > Utilities".`) || '').trim();
+  if (!target || target === sourcePath) return null;
+  if (!validMergeTargets().includes(target)) {
+    showToast(`"${target}" isn't an existing category or subcategory. Valid options: ${validMergeTargets().join(', ')}`, 'error');
+    return null;
+  }
+  const countTxt = count ? ` (${count} transaction${count === 1 ? '' : 's'})` : '';
+  if (!confirm(`Merge "${sourcePath}"${countTxt} into "${target}"? This can't be undone automatically — you'd need to recategorize them back one by one.`)) return null;
+  return target;
+}
+
+function mergeCategory(sourceKey) {
+  const target = promptMergeTarget(sourceKey, categoryInUseCount(sourceKey, true));
+  if (!target) return;
+  migrateCategoryReferences(sourceKey, target, true);
+  categoryTree = categoryTree.filter(c => c.key !== sourceKey);
+  markUnsaved();
+  renderCategoriesUI();
+  renderBudgetsUI();
+  refreshViews();
+  showToast(`Merged "${sourceKey}" into "${target}".`, 'success');
+}
+
+function mergeSubcategory(topKey, sourceSub) {
+  const sourcePath = topKey + ' > ' + sourceSub;
+  const target = promptMergeTarget(sourcePath, categoryInUseCount(sourcePath, false));
+  if (!target) return;
+  migrateCategoryReferences(sourcePath, target, false);
+  const entry = categoryTree.find(c => c.key === topKey);
+  entry.subs = entry.subs.filter(s => s !== sourceSub);
+  if (!entry.subs.length) entry.subs = null;
+  delete budgets[sourcePath];
+  markUnsaved();
+  renderCategoriesUI();
+  renderBudgetsUI();
+  refreshViews();
+  showToast(`Merged "${sourcePath}" into "${target}".`, 'success');
+}
+
 function renderCategoriesUI() {
   const wrap = document.getElementById('category-tree-wrap');
   wrap.innerHTML = '';
@@ -1639,10 +1746,13 @@ function renderCategoriesUI() {
     const addSubBtn = document.createElement('button');
     addSubBtn.textContent = '+ Sub';
     addSubBtn.onclick = () => addSubcategory(entry.key);
+    const mergeBtn = document.createElement('button');
+    mergeBtn.textContent = 'Merge into…';
+    mergeBtn.onclick = () => mergeCategory(entry.key);
     const deleteBtn = document.createElement('button');
     deleteBtn.textContent = 'Delete';
     deleteBtn.onclick = () => deleteCategory(entry.key);
-    actions.append(renameBtn, addSubBtn, deleteBtn);
+    actions.append(renameBtn, addSubBtn, mergeBtn, deleteBtn);
     header.append(nameSpan, actions);
     row.appendChild(header);
 
@@ -1659,10 +1769,13 @@ function renderCategoriesUI() {
         const subRenameBtn = document.createElement('button');
         subRenameBtn.textContent = 'Rename';
         subRenameBtn.onclick = () => renameSubcategory(entry.key, sub);
+        const subMergeBtn = document.createElement('button');
+        subMergeBtn.textContent = 'Merge into…';
+        subMergeBtn.onclick = () => mergeSubcategory(entry.key, sub);
         const subDeleteBtn = document.createElement('button');
         subDeleteBtn.textContent = 'Delete';
         subDeleteBtn.onclick = () => deleteSubcategory(entry.key, sub);
-        subActions.append(subRenameBtn, subDeleteBtn);
+        subActions.append(subRenameBtn, subMergeBtn, subDeleteBtn);
         subRow.append(subName, subActions);
         subList.appendChild(subRow);
       });
@@ -1695,6 +1808,18 @@ function effectiveMonthlyBudget(entry) {
   return null;
 }
 
+// 6-step gradient rather than a plain under/over binary: green (comfortably under) through
+// yellow, orange, and light red as it approaches 100%, then a muted dark red just over budget,
+// escalating to a bright red only once meaningfully over.
+function budgetColorForPct(pct) {
+  if (pct < 50) return '#7ee8b8';
+  if (pct < 75) return '#ffcb6b';
+  if (pct < 90) return '#ffb454';
+  if (pct < 100) return '#ff8a80';
+  if (pct < 125) return '#b33939';
+  return '#ff6b6b';
+}
+
 function setBudget(path, rawValue) {
   const amount = parseFloat(rawValue);
   if (!rawValue || isNaN(amount) || amount <= 0) delete budgets[path];
@@ -1715,23 +1840,26 @@ function budgetRowRight(path, explicitMonthlyBudget, actual, effectiveRangeBudge
 
   if (effectiveRangeBudget) {
     const pct = actual / effectiveRangeBudget * 100;
-    const over = pct > 100;
+    const color = budgetColorForPct(pct);
 
     const barWrap = document.createElement('span');
     barWrap.className = 'budget-bar-wrap';
     const bar = document.createElement('span');
-    bar.className = 'budget-bar' + (over ? ' over' : '');
+    bar.className = 'budget-bar';
     bar.style.width = Math.min(pct, 100) + '%';
+    bar.style.backgroundColor = color;
     barWrap.appendChild(bar);
     right.appendChild(barWrap);
 
     const pctSpan = document.createElement('span');
-    pctSpan.className = 'budget-pct' + (over ? ' over' : '');
+    pctSpan.className = 'budget-pct';
+    pctSpan.style.color = color;
     pctSpan.textContent = Math.round(pct) + '%' + (isRolledUp ? ' (from subs)' : '');
     right.appendChild(pctSpan);
   } else {
     const noBudget = document.createElement('span');
     noBudget.className = 'budget-pct';
+    noBudget.style.color = 'var(--text-dim)';
     noBudget.textContent = 'no budget set';
     right.appendChild(noBudget);
   }

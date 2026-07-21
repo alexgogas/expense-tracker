@@ -4,6 +4,9 @@
 
 const CATEGORY_TREE = [
   { key: "Restaurants, Cafes & Bars", subs: ["Restaurant", "Lunch", "Bars", "Cafe/Bakery", "Other"] },
+  // Utilities live only here now, not as a separate flat "Bills/Utilities" top-level category —
+  // existing data already filed under the old category can be moved with the Categories card's
+  // "Merge into..." action (merge "Bills/Utilities" into "Housing/Mortgage > Utilities").
   { key: "Housing/Mortgage", subs: ["Interest", "Amortization", "Utilities"] },
   { key: "Greece", subs: null },
   { key: "Transportation", subs: null },
@@ -11,7 +14,6 @@ const CATEGORY_TREE = [
   { key: "Groceries", subs: null },
   { key: "Shopping/Retail", subs: null },
   { key: "Health & Wellness", subs: null },
-  { key: "Bills/Utilities", subs: null },
   { key: "Subscriptions/Digital Services", subs: null },
   { key: "Delivery Apps", subs: null },
   { key: "Other", subs: ["7-Eleven", "Uncategorized"] },
