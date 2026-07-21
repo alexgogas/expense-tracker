@@ -147,20 +147,20 @@
   }
 
   .cat-tree-row { border: 1px solid var(--border); border-radius: 8px; margin-bottom: 8px; overflow: hidden; }
-  .cat-tree-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 12px; background: var(--panel-2); }
+  .cat-tree-header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; padding: 10px 12px; background: var(--panel-2); }
   .cat-tree-name { font-weight: 600; font-size: 13px; }
-  .cat-tree-actions { display: flex; gap: 6px; flex-shrink: 0; }
+  .cat-tree-actions { display: flex; flex-wrap: wrap; gap: 6px; }
   .cat-tree-actions button { padding: 4px 10px; font-size: 12px; }
   .cat-tree-subs { padding: 4px 12px 8px 28px; }
-  .cat-tree-sub-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 0; font-size: 13px; color: var(--text-dim); border-bottom: 1px solid var(--border); }
+  .cat-tree-sub-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; padding: 8px 0; font-size: 13px; color: var(--text-dim); border-bottom: 1px solid var(--border); }
   .cat-tree-sub-row:last-child { border-bottom: none; }
   .cat-tree-sub-row .cat-tree-actions button { padding: 2px 8px; font-size: 11px; }
 
-  .budget-row-right { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
+  .budget-row-right { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; }
   .budget-actual { font-size: 12px; color: var(--text-dim); white-space: nowrap; }
   .budget-bar-wrap { width: 90px; height: 8px; background: var(--panel-2); border-radius: 4px; overflow: hidden; flex-shrink: 0; }
   .budget-bar { display: block; height: 100%; border-radius: 4px; }
-  .budget-pct { font-size: 12px; white-space: nowrap; min-width: 90px; }
+  .budget-pct { font-size: 12px; white-space: nowrap; }
   .budget-input {
     width: 80px; background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
     border-radius: 6px; padding: 4px 8px; font-size: 13px; text-align: right;
@@ -169,17 +169,18 @@
   details.cat-group { border: 1px solid var(--border); border-radius: 8px; margin-bottom: 8px; overflow: hidden; }
   details.cat-group > summary {
     cursor: pointer; padding: 10px 12px; background: var(--panel-2);
-    list-style: none; display: flex; justify-content: space-between; align-items: center;
-    font-size: 13px; gap: 12px;
+    list-style: none; display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center;
+    font-size: 13px; gap: 6px 12px;
   }
   details.cat-group > summary::-webkit-details-marker { display: none; }
   details.cat-group > summary .name { color: var(--text); font-weight: 600; }
-  details.cat-group > summary .meta { color: var(--text-dim); font-size: 12px; white-space: nowrap; }
+  details.cat-group > summary .meta { color: var(--text-dim); font-size: 12px; }
   details.cat-group > summary .caret { display: inline-block; margin-right: 6px; color: var(--text-dim); transition: transform 0.15s; }
   details.cat-group[open] > summary .caret { transform: rotate(90deg); }
   details.cat-group .sub-group { margin: 8px 12px; }
   details.cat-group table { margin: 0 12px 12px; width: calc(100% - 24px); }
   details.cat-group .sub-group table { margin: 0 0 10px; width: 100%; }
+  .table-scroll { overflow-x: auto; }
 
   #signed-out-msg, #no-folder-msg { text-align: center; padding: 60px 20px; color: var(--text-dim); }
   #signed-out-msg h2, #no-folder-msg h2 { color: var(--text); font-size: 20px; margin-bottom: 8px; }
@@ -977,62 +978,69 @@ function renderSpendChart() {
   document.getElementById('breadcrumb-row').classList.toggle('hidden', !breadcrumbVisible);
   document.getElementById('breadcrumb-label').textContent = breadcrumbText;
 
-  const ctx = document.getElementById('spend-chart').getContext('2d');
-  if (chartInstance) chartInstance.destroy();
-  chartInstance = new Chart(ctx, {
-    type: 'bar',
-    data: { labels: buckets.map(bucketLabel), datasets },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      onClick: handleChartClick,
-      scales: {
-        x: { stacked: true, ticks: { color: '#9aa4b2' }, grid: { color: '#2a303a' }, title: { display: isDailyMode(), text: 'Day of month', color: '#9aa4b2' } },
-        y: { stacked: true, ticks: { color: '#9aa4b2' }, grid: { color: '#2a303a' } }
-      },
-      plugins: {
-        legend: {
-          labels: {
-            color: '#e8eaed', boxWidth: 12, font: { size: 11 },
-            // Average and Budget are flat reference lines drawn with pointRadius:0 (no marker to
-            // hover), so they never get a tooltip. Show their value directly in the legend text
-            // instead — cheaper than making a hoverable invisible point work, and always visible
-            // rather than only on hover.
-            generateLabels: (chart) => {
-              const items = Chart.defaults.plugins.legend.labels.generateLabels(chart);
-              items.forEach(item => {
-                const ds = chart.data.datasets[item.datasetIndex];
-                if ((ds.label === 'Average' || ds.label === 'Budget') && ds.data.length) {
-                  item.text = `${ds.label}: ${Math.round(ds.data[0]).toLocaleString()} kr`;
-                }
-              });
-              return items;
-            }
-          },
-          onClick: legendDoubleClickHandler()
+  const chartData = { labels: buckets.map(bucketLabel), datasets };
+  const chartOptions = {
+    responsive: true,
+    maintainAspectRatio: false,
+    onClick: handleChartClick,
+    scales: {
+      x: { stacked: true, ticks: { color: '#9aa4b2' }, grid: { color: '#2a303a' }, title: { display: isDailyMode(), text: 'Day of month', color: '#9aa4b2' } },
+      y: { stacked: true, ticks: { color: '#9aa4b2' }, grid: { color: '#2a303a' } }
+    },
+    plugins: {
+      legend: {
+        labels: {
+          color: '#e8eaed', boxWidth: 12, font: { size: 11 },
+          // Average and Budget are flat reference lines drawn with pointRadius:0 (no marker to
+          // hover), so they never get a tooltip. Show their value directly in the legend text
+          // instead — cheaper than making a hoverable invisible point work, and always visible
+          // rather than only on hover.
+          generateLabels: (chart) => {
+            const items = Chart.defaults.plugins.legend.labels.generateLabels(chart);
+            items.forEach(item => {
+              const ds = chart.data.datasets[item.datasetIndex];
+              if ((ds.label === 'Average' || ds.label === 'Budget') && ds.data.length) {
+                item.text = `${ds.label}: ${Math.round(ds.data[0]).toLocaleString()} kr`;
+              }
+            });
+            return items;
+          }
         },
-        tooltip: {
-          callbacks: {
-            afterBody: (items) => {
-              if (drillState.level !== 'sub' || !items.length) return [];
-              const hoveredDataset = chartInstance.data.datasets[items[0].datasetIndex];
-              if (hoveredDataset.stack !== 'spend') return []; // skip the trend line itself
-              const sub = hoveredDataset.label;
-              const bucket = buckets[items[0].dataIndex];
-              const cat = drillState.category;
-              const totals = {};
-              rowsForSubcategoryBucket(rangeFilteredDataset(), cat, sub)
-                .filter(i => bucketOf(i) === bucket)
-                .forEach(i => { totals[i.merchant] = (totals[i.merchant] || 0) + i.amount; });
-              const top3 = Object.entries(totals).sort((a, b) => b[1] - a[1]).slice(0, 3);
-              if (!top3.length) return [];
-              return ['', 'Top merchants:', ...top3.map(([m, t]) => `  ${m}: ${Math.round(t).toLocaleString()} kr`)];
-            }
+        onClick: legendDoubleClickHandler()
+      },
+      tooltip: {
+        callbacks: {
+          afterBody: (items) => {
+            if (drillState.level !== 'sub' || !items.length) return [];
+            const hoveredDataset = chartInstance.data.datasets[items[0].datasetIndex];
+            if (hoveredDataset.stack !== 'spend') return []; // skip the trend line itself
+            const sub = hoveredDataset.label;
+            const bucket = buckets[items[0].dataIndex];
+            const cat = drillState.category;
+            const totals = {};
+            rowsForSubcategoryBucket(rangeFilteredDataset(), cat, sub)
+              .filter(i => bucketOf(i) === bucket)
+              .forEach(i => { totals[i.merchant] = (totals[i.merchant] || 0) + i.amount; });
+            const top3 = Object.entries(totals).sort((a, b) => b[1] - a[1]).slice(0, 3);
+            if (!top3.length) return [];
+            return ['', 'Top merchants:', ...top3.map(([m, t]) => `  ${m}: ${Math.round(t).toLocaleString()} kr`)];
           }
         }
       }
     }
-  });
+  };
+
+  // Mutate the existing Chart instance instead of destroying and recreating it on every single
+  // interaction (drilling, filtering, recategorizing) — a full destroy+recreate causes a visible
+  // redraw flicker on every click, and is unnecessary work Chart.js's own update() already avoids.
+  if (chartInstance) {
+    chartInstance.data = chartData;
+    chartInstance.options = chartOptions;
+    chartInstance.update();
+  } else {
+    const ctx = document.getElementById('spend-chart').getContext('2d');
+    chartInstance = new Chart(ctx, { type: 'bar', data: chartData, options: chartOptions });
+  }
 
   renderMerchantSummary(rows, drillState.category);
 }
@@ -1272,7 +1280,12 @@ function renderSortableTable(rows, columns, options = {}) {
   });
 
   draw();
-  return table;
+  // Wrapped so a table that's still too wide for a narrow viewport scrolls within its own box
+  // instead of forcing the whole page to scroll sideways.
+  const scrollWrap = document.createElement('div');
+  scrollWrap.className = 'table-scroll';
+  scrollWrap.appendChild(table);
+  return scrollWrap;
 }
 
 // ============================================================
@@ -1316,23 +1329,30 @@ function renderSavingsChart() {
     }];
   }
 
-  const ctx = document.getElementById('savings-chart').getContext('2d');
-  if (savingsChartInstance) savingsChartInstance.destroy();
-  savingsChartInstance = new Chart(ctx, {
-    data: { labels: buckets.map(bucketLabel), datasets },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      scales: {
-        x: { stacked: true, ticks: { color: '#9aa4b2' }, grid: { color: '#2a303a' }, title: { display: isDailyMode(), text: 'Day of month', color: '#9aa4b2' } },
-        y: { stacked: true, position: 'left', ticks: { color: '#9aa4b2' }, grid: { color: '#2a303a' } },
-        y1: { position: 'right', ticks: { color: '#9aa4b2' }, grid: { drawOnChartArea: false }, display: !isDailyMode() }
-      },
-      plugins: {
-        legend: { labels: { color: '#e8eaed', boxWidth: 12, font: { size: 11 } }, onClick: legendDoubleClickHandler() }
-      }
+  const chartData = { labels: buckets.map(bucketLabel), datasets };
+  const chartOptions = {
+    responsive: true,
+    maintainAspectRatio: false,
+    scales: {
+      x: { stacked: true, ticks: { color: '#9aa4b2' }, grid: { color: '#2a303a' }, title: { display: isDailyMode(), text: 'Day of month', color: '#9aa4b2' } },
+      y: { stacked: true, position: 'left', ticks: { color: '#9aa4b2' }, grid: { color: '#2a303a' } },
+      y1: { position: 'right', ticks: { color: '#9aa4b2' }, grid: { drawOnChartArea: false }, display: !isDailyMode() }
+    },
+    plugins: {
+      legend: { labels: { color: '#e8eaed', boxWidth: 12, font: { size: 11 } }, onClick: legendDoubleClickHandler() }
     }
-  });
+  };
+
+  // Mutate the existing Chart instance rather than destroy+recreate on every interaction — see
+  // the same comment in renderSpendChart().
+  if (savingsChartInstance) {
+    savingsChartInstance.data = chartData;
+    savingsChartInstance.options = chartOptions;
+    savingsChartInstance.update();
+  } else {
+    const ctx = document.getElementById('savings-chart').getContext('2d');
+    savingsChartInstance = new Chart(ctx, { data: chartData, options: chartOptions });
+  }
 }
 
 // ============================================================
