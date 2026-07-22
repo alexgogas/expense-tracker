@@ -1239,6 +1239,20 @@ function linearRegressionLine(values) {
   return Array.from({ length: n }, (_, i) => slope * i + intercept);
 }
 
+// Rolling trend: at each index, fits a line over just that point and the (up to) windowSize-1
+// points before it, then takes that mini-fit's value at the current point. Unlike
+// linearRegressionLine (one straight line over the whole history), this responds to recent
+// months — a downturn or acceleration in the last few months shows up right away instead of
+// being smoothed away against years of prior data. Early points (fewer than windowSize behind
+// them) just use whatever's available so far, down to a single point.
+function slidingWindowTrend(values, windowSize) {
+  return values.map((_, i) => {
+    const windowStart = Math.max(0, i - windowSize + 1);
+    const fitted = linearRegressionLine(values.slice(windowStart, i + 1));
+    return fitted[fitted.length - 1];
+  });
+}
+
 function recomputeReferenceLines(chart) {
   const trendDs = chart.data.datasets.find(d => d.label === 'Trend' || d.label === 'Trend (total savings)');
   const avgDs = chart.data.datasets.find(d => d.label === 'Average');
@@ -1259,9 +1273,10 @@ function recomputeReferenceLines(chart) {
   );
   const avgValue = totalData.reduce((s, v) => s + v, 0) / (bucketCount || 1);
 
-  // Net Worth's Trend is a best-fit line over the totals (see linearRegressionLine); the spend
-  // chart's Trend is literally the totals themselves — an established, separate convention there.
-  if (trendDs) trendDs.data = primaryStack === 'balance' ? linearRegressionLine(totalData) : totalData;
+  // Net Worth's Trend is a rolling 3-month-window fit over the totals (see slidingWindowTrend);
+  // the spend chart's Trend is literally the totals themselves — an established, separate
+  // convention there.
+  if (trendDs) trendDs.data = primaryStack === 'balance' ? slidingWindowTrend(totalData, 3) : totalData;
   if (avgDs) avgDs.data = totalData.map(() => avgValue);
 
   if (budgetDs) {
@@ -2209,12 +2224,12 @@ function renderNetWorthChart() {
     });
   });
 
-  // Trend: a linear best-fit line over total balance across whatever's currently visible via the
-  // legend (recomputeReferenceLines handles keeping it reactive to that) — the overall multi-
-  // month trajectory, not a month-by-month echo of the bars themselves (which would just
-  // duplicate what the bar heights already show).
+  // Trend: a rolling 3-month-window best-fit line over total balance across whatever's currently
+  // visible via the legend (recomputeReferenceLines handles keeping it reactive to that) — the
+  // recent trajectory, so a turn in the last few months shows up right away instead of being
+  // smoothed away against years of prior data.
   const totalPerMonth = months.map((m, idx) => datasets.reduce((s, d) => s + (d.data[idx] || 0), 0));
-  const trendData = linearRegressionLine(totalPerMonth);
+  const trendData = slidingWindowTrend(totalPerMonth, 3);
   datasets.push({
     label: 'Trend (total savings)',
     data: trendData,
