@@ -1779,12 +1779,30 @@ function categoryInUseCount(cat, prefixMatch) {
 // transactions/overrides/learnedLookup/budgets left).
 function migrateMortgageSubcategories() {
   const NEW_SUB = 'Housing/Mortgage > Amortization/interest';
-  const OLD_VALUES = ['Housing/Mortgage', 'Housing/Mortgage > Interest', 'Housing/Mortgage > Amortization'];
   let count = 0;
-  OLD_VALUES.forEach(old => {
+
+  // These two subs no longer exist in the tree at all, so any usage anywhere — transactions,
+  // overrides, learned lookup, AND budgets — is unambiguously legacy.
+  ['Housing/Mortgage > Interest', 'Housing/Mortgage > Amortization'].forEach(old => {
     count += categoryInUseCount(old, false);
     migrateCategoryReferences(old, NEW_SUB, false);
   });
+
+  // Bare "Housing/Mortgage" (no sub) is different: leafCategories() never offers it as a
+  // category dropdown option once a category has subs, so as a TRANSACTION category it really is
+  // always legacy (from before Sparkonto's rollover was pointed at the merged sub directly, or
+  // from the now-removed synthetic loan generator) — but as a BUDGET key it's still fully
+  // legitimate today: the Budgets card lets you set an overall budget directly on a top-level
+  // category even when it has subs, and effectiveMonthlyBudget() explicitly prefers that over
+  // summing the subs. Migrating it there too meant a budget you'd just set on "Housing/Mortgage"
+  // got silently reassigned to "Amortization/interest" on every subsequent load — since that
+  // reassignment never actually got saved either, it looked exactly like the budget just
+  // vanishing after Save. So: migrate for transactions/overrides/learnedLookup, never for budgets.
+  const bareMatches = t => t === 'Housing/Mortgage';
+  count += dataset.filter(t => bareMatches(t.category)).length;
+  dataset.forEach(t => { if (bareMatches(t.category)) t.category = NEW_SUB; });
+  Object.keys(overrides).forEach(m => { if (bareMatches(overrides[m])) overrides[m] = NEW_SUB; });
+  Object.keys(learnedLookup).forEach(m => { if (bareMatches(learnedLookup[m])) learnedLookup[m] = NEW_SUB; });
 
   // Legacy flat top-level category from before the nested Housing/Mortgage tree existed — its
   // name has "/Utilities" baked into the literal top-level key itself (not a real
