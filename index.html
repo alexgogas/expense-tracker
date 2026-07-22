@@ -131,8 +131,8 @@
   .badge.new { background: rgba(255,180,84,0.15); color: var(--warn); }
   .badge.matched { background: rgba(126,232,184,0.15); color: var(--accent-2); }
 
-  #range-filter-row { display: flex; align-items: center; gap: 18px; margin-top: 14px; font-size: 13px; color: var(--text-dim); flex-wrap: wrap; }
-  #range-filter-row label { display: flex; align-items: center; gap: 6px; }
+  #range-filter-row, #networth-range-filter-row { display: flex; align-items: center; gap: 18px; margin-top: 14px; font-size: 13px; color: var(--text-dim); flex-wrap: wrap; }
+  #range-filter-row label, #networth-range-filter-row label { display: flex; align-items: center; gap: 6px; }
   .btn-sm { padding: 4px 10px; font-size: 12px; }
 
   th.sortable { cursor: pointer; user-select: none; white-space: nowrap; }
@@ -257,16 +257,6 @@
       <div id="merchant-summary-wrap"></div>
     </details>
 
-    <details class="card" open>
-      <summary>
-        <div style="display:flex; align-items:center; justify-content:space-between;">
-          <h2 style="margin:0;">Savings</h2>
-          <button id="export-savings-chart-btn" class="btn-sm">Export chart</button>
-        </div>
-      </summary>
-      <div id="savings-chart-wrap" style="position:relative; height:300px; margin-top:14px;"><canvas id="savings-chart"></canvas></div>
-    </details>
-
     <details class="card">
       <summary><h2>Transactions</h2></summary>
       <div class="format-row">
@@ -274,18 +264,6 @@
         <select id="txn-card-filter" class="cat-select"><option value="">All cards</option></select>
       </div>
       <div id="txn-table-wrap"></div>
-    </details>
-
-    <details class="card">
-      <summary><h2>Categories</h2></summary>
-      <p style="color: var(--text-dim); font-size: 13px; margin: 0 0 14px;">
-        Renaming a category or subcategory updates every transaction using it. A category or
-        subcategory can't be deleted while transactions still use it — recategorize them first.
-      </p>
-      <div id="category-tree-wrap"></div>
-      <div style="margin-top: 14px;">
-        <button id="add-category-btn" class="btn-sm">+ Add category</button>
-      </div>
     </details>
 
     <details class="card">
@@ -299,6 +277,16 @@
       <div id="budget-tree-wrap"></div>
     </details>
 
+    <details class="card" open>
+      <summary>
+        <div style="display:flex; align-items:center; justify-content:space-between;">
+          <h2 style="margin:0;">Savings</h2>
+          <button id="export-savings-chart-btn" class="btn-sm">Export chart</button>
+        </div>
+      </summary>
+      <div id="savings-chart-wrap" style="position:relative; height:300px; margin-top:14px;"><canvas id="savings-chart"></canvas></div>
+    </details>
+
     <details class="card">
       <summary>
         <div style="display:flex; align-items:center; justify-content:space-between; width:100%;">
@@ -309,10 +297,27 @@
       <p style="color: var(--text-dim); font-size: 13px; margin: 0 0 14px;">
         Sparkonto balance, ISK/external-savings/fixed-term-deposit holdings, mortgage cost, and
         salary are all computed automatically from your imported Personkonto/Sparkonto
-        transactions — nothing to enter by hand. Shows every month you have data for,
-        independent of the date range selected above.
+        transactions — nothing to enter by hand. The projection assumes a regular salary through
+        Jul-27, then the a-kassa/insurance unemployment benefit step-down schedule, out to
+        however far the "To" selector below reaches.
       </p>
+      <div id="networth-range-filter-row">
+        <label>From <select id="networth-from-filter" class="cat-select"></select></label>
+        <label>To <select id="networth-to-filter" class="cat-select"></select></label>
+      </div>
       <div id="networth-chart-wrap" style="position:relative; height:340px;"><canvas id="networth-chart"></canvas></div>
+    </details>
+
+    <details class="card">
+      <summary><h2>Categories</h2></summary>
+      <p style="color: var(--text-dim); font-size: 13px; margin: 0 0 14px;">
+        Renaming a category or subcategory updates every transaction using it. A category or
+        subcategory can't be deleted while transactions still use it — recategorize them first.
+      </p>
+      <div id="category-tree-wrap"></div>
+      <div style="margin-top: 14px;">
+        <button id="add-category-btn" class="btn-sm">+ Add category</button>
+      </div>
     </details>
 
     <details class="card" open>
@@ -778,6 +783,7 @@ let drillState = { level: 'top', category: null }; // level: 'top' | 'sub' | 'me
 let savingsChartInstance = null;
 let netWorthChartInstance = null;
 let rangeFilter = { from: null, to: null }; // month labels, inclusive
+let netWorthRangeFilter = { from: null, to: null }; // month labels, inclusive — independent of rangeFilter, can extend past real data into the projection
 
 function sortedMonthList() {
   const months = [...new Set(dataset.map(i => i.month))];
@@ -796,15 +802,30 @@ function monthSortKey(label) {
   return parseInt(yy, 10) * 100 + MONTH_ABBR.indexOf(abbr);
 }
 
-// The "Mon-YY" label for the calendar month right after the given one — used to generate future
-// months for the Net Worth chart's savings projection, since there's no transaction to derive
-// them from the way sortedMonthList() does for real months.
-function nextMonthLabel(label) {
+// Number of calendar months from `fromLabel` to `toLabel` (positive if `to` is later). Unlike
+// monthSortKey (a valid ordering key, but *100-per-year so its numeric difference isn't a month
+// count once a year boundary is crossed), this is safe to use in month arithmetic — needed for
+// the Net Worth projection's benefit-tier step-down, which counts elapsed months past a cutoff.
+function monthsElapsed(fromLabel, toLabel) {
+  const [fAbbr, fYY] = fromLabel.split('-');
+  const [tAbbr, tYY] = toLabel.split('-');
+  return (parseInt(tYY, 10) * 12 + MONTH_ABBR.indexOf(tAbbr)) - (parseInt(fYY, 10) * 12 + MONTH_ABBR.indexOf(fAbbr));
+}
+
+// Shifts a "Mon-YY" label by n calendar months (either direction) — used both to generate future
+// months for the Net Worth chart's projection and to compute its default From/To window, since
+// there's no transaction to derive them from the way sortedMonthList() does for real months.
+function addMonthsToLabel(label, n) {
   const [abbr, yy] = label.split('-');
-  let monthIdx = MONTH_ABBR.indexOf(abbr) + 1;
-  let year = parseInt(yy, 10);
-  if (monthIdx > 11) { monthIdx = 0; year++; }
+  let monthIdx = MONTH_ABBR.indexOf(abbr) + n;
+  let year = parseInt(yy, 10) + Math.floor(monthIdx / 12);
+  monthIdx = ((monthIdx % 12) + 12) % 12;
   return MONTH_ABBR[monthIdx] + '-' + String(year).padStart(2, '0');
+}
+
+// The "Mon-YY" label for the calendar month right after the given one.
+function nextMonthLabel(label) {
+  return addMonthsToLabel(label, 1);
 }
 
 function visibleMonths() {
@@ -952,13 +973,19 @@ function renderOverview() {
   // Default the Overview/Savings range to Jan-25 onward (falling back to the earliest available
   // month if there's no data that far back yet) — this only sets the initial "From" selector;
   // the dropdown still lets you pick any earlier month. Only these two charts (and the
-  // transactions browser, which shares the same range) are affected — the Net Worth chart always
-  // shows its own full history regardless of this filter.
+  // transactions browser, which shares the same range) are affected — the Net Worth chart has
+  // its own independent From/To selector, set below.
   const lastMonth = months[months.length - 1] || null;
   const defaultFrom = (months.includes('Jan-25') && lastMonth && monthSortKey('Jan-25') <= monthSortKey(lastMonth))
     ? 'Jan-25' : (months[0] || null);
   rangeFilter = { from: defaultFrom, to: lastMonth };
   renderRangeFilter();
+
+  // Net Worth chart's own range: defaults to 2 years back through 3 months from today (today, not
+  // last actual month — the "To" end is what pulls the projection forward into future months).
+  const today = todayMonthLabel();
+  netWorthRangeFilter = { from: addMonthsToLabel(today, -24), to: addMonthsToLabel(today, 3) };
+  renderNetWorthRangeFilter();
 
   renderStatRow();
   renderSpendChart();
@@ -2217,12 +2244,77 @@ function renderBudgetsUI() {
 // ============================================================
 // NET WORTH: Sparkonto balance, tracked pots, and the combined chart
 // ============================================================
+// Simplified Swedish monthly income-tax withholding for a Stockholm-kommun resident (no church
+// tax) — combined municipal + regional rate applied to the full gross, plus state tax on the
+// portion above the (monthly-prorated) brytpunkt. Ignores grundavdrag (the basic personal
+// allowance), since its effect at these income levels is a few hundred kr/month — well within
+// the margin of error of a projection several years out — and ignores jobbskatteavdrag, since
+// a-kassa benefit (unlike salary) doesn't qualify for the earned-income tax credit. Used only for
+// the Net Worth chart's post-regular-salary benefit projection, below.
+const MUNICIPAL_TAX_RATE = 0.30; // Stockholms stad kommunalskatt + Region Stockholm, no church tax (~29.8%, rounded)
+const STATE_TAX_RATE = 0.20;
+const STATE_TAX_MONTHLY_THRESHOLD = 51900; // approx monthly brytpunkt for statlig inkomstskatt
+function netOfStockholmTax(gross) {
+  const municipalTax = gross * MUNICIPAL_TAX_RATE;
+  const stateTax = Math.max(0, gross - STATE_TAX_MONTHLY_THRESHOLD) * STATE_TAX_RATE;
+  return gross - municipalTax - stateTax;
+}
+
 // Union of months with transactions and months with an imported Sparkonto balance — a month can
 // have balance data with no transactions in it at all (e.g. a Sparkonto Saldo entry for a month
 // where nothing else happened), so this can't just reuse sortedMonthList() alone.
 function netWorthMonths() {
   const months = new Set([...sortedMonthList(), ...Object.keys(accountBalances)]);
   return [...months].sort((a, b) => monthSortKey(a) - monthSortKey(b));
+}
+
+function todayMonthLabel() {
+  return monthLabel(new Date().toISOString().slice(0, 10));
+}
+
+// Every month selectable in the Net Worth chart's From/To pickers: real history (which can start
+// earlier than "2 years ago" if there's older data) through a fixed 60-month runway from today —
+// comfortably past the ~22-month regular-salary-then-300-days-of-benefits horizon, so the tail of
+// the projection is always reachable without regenerating this list as time passes.
+function netWorthSelectableMonths() {
+  const actual = netWorthMonths();
+  const today = todayMonthLabel();
+  const defaultFrom = addMonthsToLabel(today, -24);
+  const start = (actual.length && monthSortKey(actual[0]) < monthSortKey(defaultFrom)) ? actual[0] : defaultFrom;
+  const end = addMonthsToLabel(today, 60);
+  const list = [];
+  for (let cursor = start; monthSortKey(cursor) <= monthSortKey(end); cursor = addMonthsToLabel(cursor, 1)) {
+    list.push(cursor);
+  }
+  return list;
+}
+
+function renderNetWorthRangeFilter() {
+  const selectable = netWorthSelectableMonths();
+  const fromSel = document.getElementById('networth-from-filter');
+  const toSel = document.getElementById('networth-to-filter');
+  const opts = selectable.map(m => `<option value="${m}">${m}</option>`).join('');
+  fromSel.innerHTML = opts;
+  toSel.innerHTML = opts;
+  fromSel.value = netWorthRangeFilter.from;
+  toSel.value = netWorthRangeFilter.to;
+
+  fromSel.onchange = () => {
+    netWorthRangeFilter.from = fromSel.value;
+    if (monthSortKey(netWorthRangeFilter.from) > monthSortKey(netWorthRangeFilter.to)) {
+      netWorthRangeFilter.to = netWorthRangeFilter.from;
+      toSel.value = netWorthRangeFilter.to;
+    }
+    renderNetWorthChart();
+  };
+  toSel.onchange = () => {
+    netWorthRangeFilter.to = toSel.value;
+    if (monthSortKey(netWorthRangeFilter.to) < monthSortKey(netWorthRangeFilter.from)) {
+      netWorthRangeFilter.from = netWorthRangeFilter.to;
+      fromSel.value = netWorthRangeFilter.from;
+    }
+    renderNetWorthChart();
+  };
 }
 
 // Running balance for a Sparkonto-tracked "pot" (ISK / external savings / fixed-term deposit) —
@@ -2348,28 +2440,50 @@ function renderNetWorthChart() {
     yAxisID: 'y1'
   });
 
-  // Projected savings: a flat 60k/mo salary assumption and "spending stays within budget" (this
-  // month's total budgeted spend across every category except Excluded, same sum as the Budgets
-  // card's "Total budget" row) held constant for the next 12 months, compounding onto the last
-  // actual month's total savings. Drawn as its own dashed line rather than folded into Trend,
-  // since it's a hypothetical, not a fit over real data — connects at the last real month so it
-  // reads as a continuation, not a disjoint segment.
-  const PROJECTION_MONTHS = 12;
+  // Projected savings: a regular monthly salary assumption through REGULAR_SALARY_CUTOFF, then
+  // the a-kassa/insurance unemployment benefit step-down schedule (BENEFIT_TIERS) after that —
+  // both combined with "spending stays within budget" (this month's total budgeted spend across
+  // every category except Excluded, same sum as the Budgets card's "Total budget" row) —
+  // compounding onto the last actual month's total savings. Drawn as its own dashed line rather
+  // than folded into Trend, since it's a hypothetical, not a fit over real data — connects at the
+  // last real month so it reads as a continuation, not a disjoint segment. Runs exactly as far as
+  // the chart's "To" selector requires (not a fixed horizon), since seeing the full benefit
+  // schedule play out requires reaching past the regular-salary period into 2027/2028.
+  const REGULAR_SALARY_CUTOFF = 'Jul-27'; // last month of assumed regular salary
   const PROJECTED_MONTHLY_SALARY = 60000;
+  // Days 1-300 of a-kassa/insurance unemployment benefit, in ~month-long steps, starting the
+  // month after REGULAR_SALARY_CUTOFF; beyond the last tier (day 300, the statutory max) benefits
+  // are exhausted and projected income is 0. Figures are gross/month — converted to net via
+  // netOfStockholmTax() below since every other income line in this chart (actual salary
+  // deposits, PROJECTED_MONTHLY_SALARY) is already a net, hits-the-account amount.
+  const BENEFIT_TIERS = [
+    { throughMonth: 3, gross: 74800 },  // days 1-100 (~3.3mo): 80%, insurance tops up to actual salary
+    { throughMonth: 5, gross: 65450 },  // days 101-150 (~1.7mo more): 70%, insurance step-down
+    { throughMonth: 10, gross: 23800 }  // days 151-300 (~5mo more): insurance ends, base a-kassa capped
+  ].map(t => ({ ...t, net: netOfStockholmTax(t.gross) }));
+  function projectedIncomeForMonth(m) {
+    if (monthSortKey(m) <= monthSortKey(REGULAR_SALARY_CUTOFF)) return PROJECTED_MONTHLY_SALARY;
+    const monthsAfterCutoff = monthsElapsed(REGULAR_SALARY_CUTOFF, m);
+    const tier = BENEFIT_TIERS.find(t => monthsAfterCutoff <= t.throughMonth);
+    return tier ? tier.net : 0;
+  }
+
   const totalMonthlyBudget = categoryTree
     .filter(c => c.key !== 'Excluded')
     .reduce((s, c) => s + (effectiveMonthlyBudget(c) || 0), 0);
-  const netMonthlyProjection = PROJECTED_MONTHLY_SALARY - totalMonthlyBudget;
   const lastActualTotal = totalPerMonth.length ? totalPerMonth[totalPerMonth.length - 1] : 0;
+  const lastRealMonth = months.length ? months[months.length - 1] : null;
 
   const projectedMonths = [];
   const projectedValues = [];
-  if (months.length) {
-    let cursor = months[months.length - 1];
-    for (let i = 1; i <= PROJECTION_MONTHS; i++) {
+  if (lastRealMonth && monthSortKey(netWorthRangeFilter.to) > monthSortKey(lastRealMonth)) {
+    let cursor = lastRealMonth;
+    let running = lastActualTotal;
+    while (monthSortKey(cursor) < monthSortKey(netWorthRangeFilter.to)) {
       cursor = nextMonthLabel(cursor);
+      running += projectedIncomeForMonth(cursor) - totalMonthlyBudget;
       projectedMonths.push(cursor);
-      projectedValues.push(lastActualTotal + netMonthlyProjection * i);
+      projectedValues.push(running);
     }
   }
 
@@ -2379,7 +2493,7 @@ function renderNetWorthChart() {
   const projectionData = months.map((_, idx) => idx === months.length - 1 ? lastActualTotal : null)
     .concat(projectedValues);
   datasets.push({
-    label: 'Projected savings (60k/mo salary, within budget)',
+    label: 'Projected savings (salary, then a-kassa step-down)',
     data: projectionData,
     type: 'line',
     stack: 'projection-line',
@@ -2394,8 +2508,18 @@ function renderNetWorthChart() {
     yAxisID: 'y'
   });
 
+  // Crop to the selected From/To window — this only trims what's drawn, not the underlying
+  // running totals, so scrolling the window never changes the trajectory itself.
   const allMonths = months.concat(projectedMonths);
-  const chartData = { labels: allMonths, datasets };
+  const visibleIdx = [];
+  allMonths.forEach((m, idx) => {
+    if (monthSortKey(m) >= monthSortKey(netWorthRangeFilter.from) && monthSortKey(m) <= monthSortKey(netWorthRangeFilter.to)) {
+      visibleIdx.push(idx);
+    }
+  });
+  const visibleLabels = visibleIdx.map(idx => allMonths[idx]);
+  datasets.forEach(d => { d.data = visibleIdx.map(idx => d.data[idx]); });
+  const chartData = { labels: visibleLabels, datasets };
   const chartOptions = {
     responsive: true,
     maintainAspectRatio: false,
