@@ -726,6 +726,8 @@ async function loadAllData() {
       }
     }
 
+    const mortgageMigrationCount = migrateMortgageSubcategories();
+
     setStatus(`Loaded ${dataset.length} transactions.`);
     renderOverview();
 
@@ -736,6 +738,14 @@ async function loadAllData() {
         `Removed ${invalidCount} corrupted transaction${invalidCount === 1 ? '' : 's'} found in your data ` +
         `(e.g. a bank export's summary row that got imported by mistake). Click "Save to Drive" to make this permanent.`,
         'error'
+      );
+    }
+    if (mortgageMigrationCount) {
+      markUnsaved();
+      showToast(
+        `Moved ${mortgageMigrationCount} transaction${mortgageMigrationCount === 1 ? '' : 's'} from the old Housing/Mortgage ` +
+        `Interest/Amortization subcategories onto the new combined "Amortization/interest" one. Click "Save to Drive" to make this permanent.`,
+        'success'
       );
     }
   } catch (err) {
@@ -1201,6 +1211,25 @@ function budgetContributionForSeries(label) {
   return 0;
 }
 
+// Least-squares linear fit over an evenly-spaced series (index 0..n-1 as x), returned as the
+// fitted y-value at each index — a straight best-fit line through the noisy monthly totals,
+// showing the overall multi-month trajectory rather than echoing each month's exact value (which
+// is what just plotting the totals directly would do).
+function linearRegressionLine(values) {
+  const n = values.length;
+  if (!n) return [];
+  const meanX = (n - 1) / 2;
+  const meanY = values.reduce((s, v) => s + v, 0) / n;
+  let num = 0, den = 0;
+  for (let i = 0; i < n; i++) {
+    num += (i - meanX) * (values[i] - meanY);
+    den += (i - meanX) ** 2;
+  }
+  const slope = den ? num / den : 0;
+  const intercept = meanY - slope * meanX;
+  return Array.from({ length: n }, (_, i) => slope * i + intercept);
+}
+
 function recomputeReferenceLines(chart) {
   const trendDs = chart.data.datasets.find(d => d.label === 'Trend' || d.label === 'Trend (total savings)');
   const avgDs = chart.data.datasets.find(d => d.label === 'Average');
@@ -1221,7 +1250,9 @@ function recomputeReferenceLines(chart) {
   );
   const avgValue = totalData.reduce((s, v) => s + v, 0) / (bucketCount || 1);
 
-  if (trendDs) trendDs.data = totalData;
+  // Net Worth's Trend is a best-fit line over the totals (see linearRegressionLine); the spend
+  // chart's Trend is literally the totals themselves — an established, separate convention there.
+  if (trendDs) trendDs.data = primaryStack === 'balance' ? linearRegressionLine(totalData) : totalData;
   if (avgDs) avgDs.data = totalData.map(() => avgValue);
 
   if (budgetDs) {
@@ -1695,6 +1726,28 @@ function categoryInUseCount(cat, prefixMatch) {
   return dataset.filter(t => matches(t.category)).length;
 }
 
+// One-time migration: Housing/Mortgage used to have separate Interest/Amortization subs, but
+// Sparkonto's per-tranche rollover (see parseSparkontoRows) can't cleanly split between them, so
+// both — plus anything left on the bare "Housing/Mortgage" value from before that split existed
+// at all — are folded into one combined "Amortization/interest" sub. Called on every load; a
+// no-op once nothing on the old values remains (categoryTree already updated, no matching
+// transactions/overrides/learnedLookup/budgets left).
+function migrateMortgageSubcategories() {
+  const NEW_SUB = 'Housing/Mortgage > Amortization/interest';
+  const OLD_VALUES = ['Housing/Mortgage', 'Housing/Mortgage > Interest', 'Housing/Mortgage > Amortization'];
+  let count = 0;
+  OLD_VALUES.forEach(old => {
+    count += categoryInUseCount(old, false);
+    migrateCategoryReferences(old, NEW_SUB, false);
+  });
+  const entry = categoryTree.find(c => c.key === 'Housing/Mortgage');
+  if (entry) {
+    entry.subs = (entry.subs || []).filter(s => s !== 'Interest' && s !== 'Amortization');
+    if (!entry.subs.includes('Amortization/interest')) entry.subs.unshift('Amortization/interest');
+  }
+  return count;
+}
+
 function addCategory() {
   const name = (prompt('New category name:') || '').trim();
   if (!name) return;
@@ -2110,11 +2163,12 @@ function renderNetWorthChart() {
     });
   });
 
-  // Trend: total balance across whatever's currently visible via the legend — same "sum of
-  // visible stack" idea as the spend chart's Trend/Average/Budget lines (recomputeReferenceLines
-  // handles both). Unlike Average/Budget, this varies month to month rather than being flat, so
-  // it gets real point markers (hoverable/tooltippable) instead of a legend-text value.
-  const trendData = months.map((m, idx) => datasets.reduce((s, d) => s + (d.data[idx] || 0), 0));
+  // Trend: a linear best-fit line over total balance across whatever's currently visible via the
+  // legend (recomputeReferenceLines handles keeping it reactive to that) — the overall multi-
+  // month trajectory, not a month-by-month echo of the bars themselves (which would just
+  // duplicate what the bar heights already show).
+  const totalPerMonth = months.map((m, idx) => datasets.reduce((s, d) => s + (d.data[idx] || 0), 0));
+  const trendData = linearRegressionLine(totalPerMonth);
   datasets.push({
     label: 'Trend (total savings)',
     data: trendData,
@@ -2132,14 +2186,11 @@ function renderNetWorthChart() {
   // Mortgage cost and salary are both already tracked as transactions elsewhere in this app —
   // computed live here, no separate manual entry needed for either. Both vary month to month,
   // so both get hoverable point markers too. Mortgage cost covers loan interest/amortization
-  // only, not Utilities (a separate flat bill, not a loan cost): the bare "Housing/Mortgage"
-  // category (Sparkonto's full per-tranche rollover, which can't be split into interest vs.
-  // amortization) plus Personkonto's manually-categorized "Interest"/"Amortization" entries.
-  const MORTGAGE_COST_CATEGORIES = new Set([
-    'Housing/Mortgage', 'Housing/Mortgage > Interest', 'Housing/Mortgage > Amortization'
-  ]);
+  // only, not Utilities (a separate flat bill, not a loan cost) — both Sparkonto's per-tranche
+  // rollover and Personkonto's entries are filed under this one combined subcategory (see
+  // migrateMortgageSubcategories(), which moves over anything still on the old split subs).
   const mortgageData = months.map(m =>
-    dataset.filter(i => i.month === m && MORTGAGE_COST_CATEGORIES.has(i.category)).reduce((s, i) => s + i.amount, 0)
+    dataset.filter(i => i.month === m && i.category === 'Housing/Mortgage > Amortization/interest').reduce((s, i) => s + i.amount, 0)
   );
   datasets.push({
     label: 'Mortgage cost',
@@ -2179,8 +2230,11 @@ function renderNetWorthChart() {
     maintainAspectRatio: false,
     scales: {
       x: { stacked: true, ticks: { color: '#9aa4b2' }, grid: { color: '#2a303a' } },
-      y: { stacked: true, position: 'left', ticks: { color: '#9aa4b2' }, grid: { color: '#2a303a' } },
-      y1: { position: 'right', ticks: { color: '#9aa4b2' }, grid: { drawOnChartArea: false } }
+      // beginAtZero matters here: without it, Chart.js can round the axis's auto-computed min
+      // down below the actual data (e.g. to -50000) purely to land on "nice" tick intervals for
+      // a large range, even though every real value is >= 0.
+      y: { stacked: true, position: 'left', beginAtZero: true, ticks: { color: '#9aa4b2' }, grid: { color: '#2a303a' } },
+      y1: { position: 'right', beginAtZero: true, ticks: { color: '#9aa4b2' }, grid: { drawOnChartArea: false } }
     },
     plugins: {
       legend: { labels: { color: '#e8eaed', boxWidth: 12, font: { size: 11 } }, onClick: legendDoubleClickHandler() }
