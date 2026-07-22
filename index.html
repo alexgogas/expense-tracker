@@ -1239,17 +1239,21 @@ function linearRegressionLine(values) {
   return Array.from({ length: n }, (_, i) => slope * i + intercept);
 }
 
-// Rolling trend: at each index, fits a line over just that point and the (up to) windowSize-1
-// points before it, then takes that mini-fit's value at the current point. Unlike
-// linearRegressionLine (one straight line over the whole history), this responds to recent
-// months — a downturn or acceleration in the last few months shows up right away instead of
-// being smoothed away against years of prior data. Early points (fewer than windowSize behind
-// them) just use whatever's available so far, down to a single point.
+// Rolling trend: at each index, the mean of just that point and the (up to) windowSize-1 points
+// before it — a genuine moving average, so month-to-month noise gets actually dampened rather
+// than tracked closely. An earlier version fit a small linear regression per window and
+// evaluated it at the window's own last point, which sounds similar but isn't: in a least-squares
+// fit, the endpoints of the window carry the most leverage, so the fitted value AT the endpoint
+// ends up very close to that point's raw value — barely different from just plotting the totals
+// directly, which was the complaint in the first place. A moving average has no such issue: it's
+// always between the min and max of its window, so it can never just echo the latest point.
+// Early points (fewer than windowSize behind them) average over whatever's available so far,
+// down to a single point.
 function slidingWindowTrend(values, windowSize) {
   return values.map((_, i) => {
     const windowStart = Math.max(0, i - windowSize + 1);
-    const fitted = linearRegressionLine(values.slice(windowStart, i + 1));
-    return fitted[fitted.length - 1];
+    const window = values.slice(windowStart, i + 1);
+    return window.reduce((s, v) => s + v, 0) / window.length;
   });
 }
 
