@@ -1476,8 +1476,14 @@ function renderSavingsChart() {
     maintainAspectRatio: false,
     scales: {
       x: { stacked: true, ticks: { color: '#9aa4b2' }, grid: { color: '#2a303a' }, title: { display: isDailyMode(), text: 'Day of month', color: '#9aa4b2' } },
-      y: { stacked: true, position: 'left', ticks: { color: '#9aa4b2' }, grid: { color: '#2a303a' } },
-      y1: { position: 'right', ticks: { color: '#9aa4b2' }, grid: { drawOnChartArea: false }, display: !isDailyMode() }
+      // beginAtZero (not a hard min:0 — see the Net Worth chart's y/y1 for that variant): Chart.js
+      // can otherwise round an axis's auto-computed min below the true data minimum to land on
+      // "nice" tick intervals, even when nothing is actually negative. Left as the soft version
+      // here rather than a hard floor because "Savings (salary − spend)" on y1 can be genuinely
+      // negative in a real deficit month — a hard min:0 would clip that out of view instead of
+      // just fixing the rounding.
+      y: { stacked: true, position: 'left', beginAtZero: true, ticks: { color: '#9aa4b2' }, grid: { color: '#2a303a' } },
+      y1: { position: 'right', beginAtZero: true, ticks: { color: '#9aa4b2' }, grid: { drawOnChartArea: false }, display: !isDailyMode() }
     },
     plugins: {
       legend: { labels: { color: '#e8eaed', boxWidth: 12, font: { size: 11 } }, onClick: legendDoubleClickHandler() }
