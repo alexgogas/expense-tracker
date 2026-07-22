@@ -143,14 +143,16 @@ function parsePersonkontoRows(rows) {
     } else if (/^Nordea Vardagspaket/i.test(rubrik)) {
       merchant = 'Nordea Vardagspaket';
       category = 'Excluded';
-    } else if (/^Betalning BG/i.test(rubrik) && amount <= -3600 && amount >= -4310) {
-      // The recurring mortgage-related Bankgiro fee ("Avgift") — the only "Betalning BG" payment
-      // that falls in this narrow amount range every month; other BG/PG payments outside it are
-      // left uncategorized like before, resolved downstream.
-      merchant = 'Mortgage Avgift (Bankgiro)';
+    } else if (/^Open Banking BG 469-8593/i.test(rubrik)) {
+      // The recurring housing-association fee ("Avgift", paid via a PSD2/Open Banking-initiated
+      // Bankgiro payment to a specific, dedicated Bankgiro number — matching on that number
+      // rather than the amount, since the fee itself can change over time (e.g. an annual
+      // increase) while the payee's Bankgiro number stays fixed.
+      merchant = 'Housing association fee (BG 469-8593)';
       category = 'Housing/Mortgage > Avgift';
     }
-    // Autogiro, other Betalning BG/PG, Open Banking, Kontantuttag: leave category null, resolved downstream
+    // Autogiro, Betalning BG/PG, other Open Banking payments, Kontantuttag: leave category null,
+    // resolved downstream
 
     out.push({
       txn_date: row.Bokforingsdag,
