@@ -2238,6 +2238,27 @@ function renderBalanceGridUI() {
   wrap.appendChild(scrollWrap);
 }
 
+// Running balance for a Sparkonto-tracked "pot" (ISK / external savings / fixed-term deposit) —
+// these have no manual balance entry of their own; their whole history is the Sparkonto
+// transactions tagged with this _flowBucket. Money leaving Sparkonto into the pot (_rawSign -1)
+// increases it; money returning (_rawSign +1) decreases it. Sorted chronologically so a month
+// containing multiple entries ends up with the correct cumulative total, and months with no
+// activity forward-fill the last known balance (same "held continuously" idea as the manual
+// balance grid, not a reset to zero between transactions).
+function computeFlowBucketBalances(bucketKey) {
+  const txns = dataset
+    .filter(t => t._flowBucket === bucketKey)
+    .slice()
+    .sort((a, b) => a.txn_date.localeCompare(b.txn_date));
+  let running = 0;
+  const byMonth = {};
+  txns.forEach(t => {
+    running += -(t._rawSign || 1) * t.amount;
+    byMonth[t.month] = running;
+  });
+  return byMonth;
+}
+
 function renderNetWorthChart() {
   const months = netWorthMonths();
   const datasets = accountList.map((acct, idx) => ({
@@ -2248,6 +2269,32 @@ function renderNetWorthChart() {
     type: 'bar',
     yAxisID: 'y'
   }));
+
+  // Pots tracked purely from Sparkonto transactions, not the manual balance grid — skipped
+  // entirely if the user has no such transactions (e.g. hasn't imported Sparkonto data), so
+  // the legend doesn't clutter with empty always-zero series.
+  const FLOW_BUCKETS = [
+    { key: 'isk', label: 'ISK' },
+    { key: 'external-savings', label: 'External savings (until returned)' },
+    { key: 'fixed-term-deposit', label: 'Fixed-term deposit' }
+  ];
+  FLOW_BUCKETS.forEach((bucket, idx) => {
+    const byMonth = computeFlowBucketBalances(bucket.key);
+    if (!Object.keys(byMonth).length) return;
+    let last = 0;
+    const data = months.map(m => {
+      if (Object.prototype.hasOwnProperty.call(byMonth, m)) last = byMonth[m];
+      return last;
+    });
+    datasets.push({
+      label: bucket.label,
+      data,
+      backgroundColor: colorForIndex(accountList.length + idx),
+      stack: 'balance',
+      type: 'bar',
+      yAxisID: 'y'
+    });
+  });
 
   // Trend: total balance across whatever's currently visible via the legend — same "sum of
   // visible stack" idea as the spend chart's Trend/Average/Budget lines (recomputeReferenceLines

@@ -163,6 +163,13 @@ function parseSparkontoRows(rows) {
     const amount = parseFloat(row.Belopp);
     let merchant = rubrik;
     let category = null;
+    // _flowBucket tags transactions that move money into/out of a specific owned-elsewhere
+    // pot (ISK, an external bank's savings account, a Nordea fixed-term deposit) rather than
+    // spending it. Combined with _rawSign (money leaving Sparkonto increases the pot; money
+    // returning decreases it) this drives the Net Worth chart's per-pot running balance —
+    // these pots aren't tracked via the manual/CSV account-balance grid since their whole
+    // history lives in these Sparkonto transactions already.
+    let flowBucket = null;
 
     if (/^Omsättning lån/i.test(rubrik)) {
       // Full loan rollover per tranche — this can't be cleanly split into interest vs.
@@ -170,17 +177,26 @@ function parseSparkontoRows(rows) {
       // (no sub), alongside — not replacing — any Interest/Amortization entries recorded
       // elsewhere (e.g. from a Personkonto import).
       category = 'Housing/Mortgage';
-    } else if (/^(Ny|Förfall|Prel\.skatt|Ränta) FASTRÄNTEPLACERING/i.test(rubrik)) {
+    } else if (/^(Ny|Förfall) FASTRÄNTEPLACERING/i.test(rubrik)) {
       merchant = 'Fasträntplacering';
       category = 'Excluded'; // internal transfer to/from an owned fixed-term deposit, not spend
+      flowBucket = 'fixed-term-deposit'; // principal moving in (Ny) or out (Förfall)
+    } else if (/^(Prel\.skatt|Ränta) FASTRÄNTEPLACERING/i.test(rubrik)) {
+      // Tax withheld / interest earned on the deposit — a side effect of holding it, not a
+      // change in principal, so this does NOT feed the fixed-term-deposit running balance
+      // (avoids double-counting alongside the Ny/Förfall pair around the same rollover).
+      merchant = 'Fasträntplacering';
+      category = 'Excluded';
     } else if (/^(Ränta|Preliminär skatt) \d{4}$/i.test(rubrik)) {
       category = 'Excluded'; // account-level annual interest/tax entries, not spend
     } else if (rubrik.includes('4716 74 80297')) {
       merchant = 'ISK transfer';
       category = 'Excluded'; // moving to another owned asset (ISK), not spend
+      flowBucket = 'isk';
     } else if (rubrik.includes('9750 14 57184') || /^UTTAG NML/i.test(rubrik)) {
       merchant = 'External savings (9750 14 57184)';
       category = 'Excluded'; // temporarily held at another bank, still owned
+      flowBucket = 'external-savings';
     } else if (/^Överföring 3204 01 72718/i.test(rubrik)) {
       category = 'Excluded'; // transfer to/from the linked Personkonto
     } else if (/^Slutlikvid/i.test(rubrik) || rubrik === 'Insättning') {
@@ -194,7 +210,9 @@ function parseSparkontoRows(rows) {
       merchant,
       amount: Math.abs(amount),
       card: 'Sparkonto',
-      _forcedCategory: category
+      _forcedCategory: category,
+      _flowBucket: flowBucket,
+      _rawSign: amount < 0 ? -1 : 1
     });
   }
   return out;
