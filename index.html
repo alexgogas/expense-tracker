@@ -796,6 +796,17 @@ function monthSortKey(label) {
   return parseInt(yy, 10) * 100 + MONTH_ABBR.indexOf(abbr);
 }
 
+// The "Mon-YY" label for the calendar month right after the given one — used to generate future
+// months for the Net Worth chart's savings projection, since there's no transaction to derive
+// them from the way sortedMonthList() does for real months.
+function nextMonthLabel(label) {
+  const [abbr, yy] = label.split('-');
+  let monthIdx = MONTH_ABBR.indexOf(abbr) + 1;
+  let year = parseInt(yy, 10);
+  if (monthIdx > 11) { monthIdx = 0; year++; }
+  return MONTH_ABBR[monthIdx] + '-' + String(year).padStart(2, '0');
+}
+
 function visibleMonths() {
   const months = sortedMonthList();
   if (!rangeFilter.from || !rangeFilter.to) return months;
@@ -2313,7 +2324,54 @@ function renderNetWorthChart() {
     yAxisID: 'y1'
   });
 
-  const chartData = { labels: months, datasets };
+  // Projected savings: a flat 60k/mo salary assumption and "spending stays within budget" (this
+  // month's total budgeted spend across every category except Excluded, same sum as the Budgets
+  // card's "Total budget" row) held constant for the next 12 months, compounding onto the last
+  // actual month's total savings. Drawn as its own dashed line rather than folded into Trend,
+  // since it's a hypothetical, not a fit over real data — connects at the last real month so it
+  // reads as a continuation, not a disjoint segment.
+  const PROJECTION_MONTHS = 12;
+  const PROJECTED_MONTHLY_SALARY = 60000;
+  const totalMonthlyBudget = categoryTree
+    .filter(c => c.key !== 'Excluded')
+    .reduce((s, c) => s + (effectiveMonthlyBudget(c) || 0), 0);
+  const netMonthlyProjection = PROJECTED_MONTHLY_SALARY - totalMonthlyBudget;
+  const lastActualTotal = totalPerMonth.length ? totalPerMonth[totalPerMonth.length - 1] : 0;
+
+  const projectedMonths = [];
+  const projectedValues = [];
+  if (months.length) {
+    let cursor = months[months.length - 1];
+    for (let i = 1; i <= PROJECTION_MONTHS; i++) {
+      cursor = nextMonthLabel(cursor);
+      projectedMonths.push(cursor);
+      projectedValues.push(lastActualTotal + netMonthlyProjection * i);
+    }
+  }
+
+  // Every existing dataset needs null padding for the new future months so Chart.js doesn't
+  // misalign them against the extended labels array.
+  datasets.forEach(d => { d.data = d.data.concat(projectedMonths.map(() => null)); });
+  const projectionData = months.map((_, idx) => idx === months.length - 1 ? lastActualTotal : null)
+    .concat(projectedValues);
+  datasets.push({
+    label: 'Projected savings (60k/mo salary, within budget)',
+    data: projectionData,
+    type: 'line',
+    stack: 'projection-line',
+    borderColor: '#c792ea',
+    backgroundColor: '#c792ea',
+    borderWidth: 2,
+    borderDash: [6, 4],
+    pointRadius: 2,
+    tension: 0,
+    spanGaps: false,
+    fill: false,
+    yAxisID: 'y'
+  });
+
+  const allMonths = months.concat(projectedMonths);
+  const chartData = { labels: allMonths, datasets };
   const chartOptions = {
     responsive: true,
     maintainAspectRatio: false,
