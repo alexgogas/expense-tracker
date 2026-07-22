@@ -727,7 +727,7 @@ async function loadAllData() {
     }
 
     const syntheticLoanCount = removeSyntheticLoanEntries();
-    const mortgageMigrationCount = migrateMortgageSubcategories();
+    const mortgageMigration = migrateMortgageSubcategories();
 
     setStatus(`Loaded ${dataset.length} transactions.`);
     renderOverview();
@@ -749,13 +749,13 @@ async function loadAllData() {
         'success'
       );
     }
-    if (mortgageMigrationCount) {
+    if (mortgageMigration.count || mortgageMigration.treeChanged) {
       markUnsaved();
-      showToast(
-        `Moved ${mortgageMigrationCount} transaction${mortgageMigrationCount === 1 ? '' : 's'} from the old Housing/Mortgage ` +
-        `Interest/Amortization subcategories onto the new combined "Amortization/interest" one. Click "Save to Drive" to make this permanent.`,
-        'success'
-      );
+      const txnNote = mortgageMigration.count
+        ? `Moved ${mortgageMigration.count} transaction${mortgageMigration.count === 1 ? '' : 's'} from the old Housing/Mortgage ` +
+          `Interest/Amortization subcategories onto the new combined "Amortization/interest" one. `
+        : 'Updated the Housing/Mortgage category tree (added the "Avgift" subcategory). ';
+      showToast(txnNote + 'Click "Save to Drive" to make this permanent.', 'success');
     }
   } catch (err) {
     setStatus('');
@@ -1788,15 +1788,27 @@ function migrateMortgageSubcategories() {
     count += categoryInUseCount(old, false);
     migrateCategoryReferences(old, NEW_SUB, false);
   });
-  categoryTree = categoryTree.filter(c => c.key !== LEGACY_TOP);
+
+  // Track categoryTree edits separately from `count` (which only counts migrated transactions) —
+  // a tree-only change (e.g. just adding the "Avgift" sub below) still needs to be saved, and
+  // gating that on `count` meant it silently never got persisted once no transactions were left
+  // to migrate: it'd get re-added to the in-memory tree on every load, render fine for that
+  // session, but vanish again on the next load since it was never actually written to Drive.
+  let treeChanged = false;
+  if (categoryTree.some(c => c.key === LEGACY_TOP)) {
+    categoryTree = categoryTree.filter(c => c.key !== LEGACY_TOP);
+    treeChanged = true;
+  }
 
   const entry = categoryTree.find(c => c.key === 'Housing/Mortgage');
   if (entry) {
+    const before = JSON.stringify(entry.subs);
     entry.subs = (entry.subs || []).filter(s => s !== 'Interest' && s !== 'Amortization');
     if (!entry.subs.includes('Amortization/interest')) entry.subs.unshift('Amortization/interest');
     if (!entry.subs.includes('Avgift')) entry.subs.splice(1, 0, 'Avgift');
+    if (JSON.stringify(entry.subs) !== before) treeChanged = true;
   }
-  return count;
+  return { count, treeChanged };
 }
 
 // One-time cleanup: some months have placeholder "loan" transactions from generateLoanEntries()
