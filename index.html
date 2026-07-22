@@ -307,37 +307,12 @@
         </div>
       </summary>
       <p style="color: var(--text-dim); font-size: 13px; margin: 0 0 14px;">
-        Track savings/investment account balances over time, alongside mortgage interest and
-        salary (both computed automatically from your transactions — no extra entry needed).
-        Shows every month you have data for, independent of the date range selected above.
+        Sparkonto balance, ISK/external-savings/fixed-term-deposit holdings, mortgage cost, and
+        salary are all computed automatically from your imported Personkonto/Sparkonto
+        transactions — nothing to enter by hand. Shows every month you have data for,
+        independent of the date range selected above.
       </p>
       <div id="networth-chart-wrap" style="position:relative; height:340px;"><canvas id="networth-chart"></canvas></div>
-
-      <div style="margin: 20px 0 10px; font-size: 13px; font-weight: 600; color: var(--text);">Accounts</div>
-      <div id="account-list-wrap"></div>
-      <div style="margin-top: 10px;">
-        <button id="add-account-btn" class="btn-sm">+ Add account</button>
-      </div>
-
-      <div style="margin: 20px 0 10px; font-size: 13px; font-weight: 600; color: var(--text);">Monthly balances</div>
-      <div id="balance-grid-wrap"></div>
-      <div style="margin-top: 10px;">
-        <button id="add-balance-month-btn" class="btn-sm">+ Add month</button>
-      </div>
-
-      <div style="margin: 20px 0 10px; font-size: 13px; font-weight: 600; color: var(--text);">Import balance history</div>
-      <p style="color: var(--text-dim); font-size: 13px; margin: 0 0 10px;">
-        Import a Nordea account export (.csv) to fill in month-end balances automatically instead
-        of typing them in one by one — works for any account export with a "Saldo" column, not
-        just savings accounts.
-      </p>
-      <div class="format-row">
-        <select id="balance-import-account-select" class="cat-select"><option value="">Select an account…</option></select>
-      </div>
-      <div class="drop-zone" id="balance-drop-zone">
-        <input type="file" id="balance-file-input" accept=".csv">
-        <div id="balance-drop-label">Drop a Nordea account .csv here, or click to choose</div>
-      </div>
     </details>
 
     <details class="card" open>
@@ -393,8 +368,9 @@ let overrides = {};
 let learnedLookup = {};
 let categoryTree = []; // live, user-editable taxonomy — see loadAllData() and the Categories card
 let budgets = {}; // categoryPath ("Top" or "Top > Sub") -> monthly budget amount — see the Budgets card
-let accountList = []; // user-editable list of savings/investment account names — see the Net Worth card
-let accountBalances = {}; // { month ("Mon-YY"): { accountName: balance } } — same month format as everything else
+const NET_WORTH_ACCOUNT = 'Sparkonto'; // the only balance-tracked account — populated automatically
+  // from the Saldo column of each Sparkonto CSV import (see handleFile/saveImport), not user-editable
+let accountBalances = {}; // { month ("Mon-YY"): { [NET_WORTH_ACCOUNT]: balance } } — same month format as everything else
 let chartInstance = null;
 let selectedFormat = 'eurobonus';
 let pendingImport = null; // { results, unmatched, format }
@@ -457,11 +433,8 @@ window.onload = () => {
   });
   document.getElementById('save-changes-btn').addEventListener('click', saveAllChanges);
   document.getElementById('add-category-btn').addEventListener('click', addCategory);
-  document.getElementById('add-account-btn').addEventListener('click', addAccount);
-  document.getElementById('add-balance-month-btn').addEventListener('click', addBalanceMonth);
 
   setupImportUI();
-  setupBalanceImportUI();
   // Deliberately no automatic/silent requestAccessToken() call here. Google Identity Services
   // doesn't support silent reauthorization — a popup is shown by design even when the user has
   // already granted access, "to improve user security and awareness" (Google's own wording).
@@ -742,17 +715,6 @@ async function loadAllData() {
       }
     }
 
-    if (fileIds['accounts.json']) {
-      accountList = JSON.parse(await downloadFile(fileIds['accounts.json']));
-    } else {
-      accountList = [];
-      try {
-        await createFileInFolder('accounts.json', JSON.stringify(accountList, null, 2));
-      } catch (e) {
-        console.error('Could not create accounts.json yet — will retry on next save.', e);
-      }
-    }
-
     if (fileIds['account_balances.json']) {
       accountBalances = JSON.parse(await downloadFile(fileIds['account_balances.json']));
     } else {
@@ -957,7 +919,15 @@ function renderOverview() {
   unsavedChanges = false;
   updateUnsavedBar();
   const months = sortedMonthList();
-  rangeFilter = { from: months[0] || null, to: months[months.length - 1] || null };
+  // Default the Overview/Savings range to Jan-25 onward (falling back to the earliest available
+  // month if there's no data that far back yet) — this only sets the initial "From" selector;
+  // the dropdown still lets you pick any earlier month. Only these two charts (and the
+  // transactions browser, which shares the same range) are affected — the Net Worth chart always
+  // shows its own full history regardless of this filter.
+  const lastMonth = months[months.length - 1] || null;
+  const defaultFrom = (months.includes('Jan-25') && lastMonth && monthSortKey('Jan-25') <= monthSortKey(lastMonth))
+    ? 'Jan-25' : (months[0] || null);
+  rangeFilter = { from: defaultFrom, to: lastMonth };
   renderRangeFilter();
 
   renderStatRow();
@@ -966,8 +936,6 @@ function renderOverview() {
   renderTransactionsBrowser();
   renderCategoriesUI();
   renderBudgetsUI();
-  renderAccountListUI();
-  renderBalanceGridUI();
   renderNetWorthChart();
 }
 
@@ -1680,11 +1648,6 @@ async function saveAllChanges() {
     } else {
       await createFileInFolder('budgets.json', JSON.stringify(budgets, null, 2));
     }
-    if (fileIds['accounts.json']) {
-      await updateFileContent(fileIds['accounts.json'], JSON.stringify(accountList, null, 2));
-    } else {
-      await createFileInFolder('accounts.json', JSON.stringify(accountList, null, 2));
-    }
     if (fileIds['account_balances.json']) {
       await updateFileContent(fileIds['account_balances.json'], JSON.stringify(accountBalances, null, 2));
     } else {
@@ -2075,167 +2038,14 @@ function renderBudgetsUI() {
 }
 
 // ============================================================
-// NET WORTH: accounts, monthly balances, and the combined chart
+// NET WORTH: Sparkonto balance, tracked pots, and the combined chart
 // ============================================================
-function addAccount() {
-  const name = (prompt('New account name (e.g. "Savings account", "ISK"):') || '').trim();
-  if (!name) return;
-  if (accountList.includes(name)) { showToast('That account already exists.', 'error'); return; }
-  accountList.push(name);
-  markUnsaved();
-  renderAccountListUI();
-  renderBalanceGridUI();
-  renderNetWorthChart();
-}
-
-function renameAccount(oldName) {
-  const newName = (prompt('Rename account:', oldName) || '').trim();
-  if (!newName || newName === oldName) return;
-  if (accountList.includes(newName)) { showToast('That account name is already in use.', 'error'); return; }
-  accountList = accountList.map(a => a === oldName ? newName : a);
-  Object.keys(accountBalances).forEach(month => {
-    if (accountBalances[month] && oldName in accountBalances[month]) {
-      accountBalances[month][newName] = accountBalances[month][oldName];
-      delete accountBalances[month][oldName];
-    }
-  });
-  markUnsaved();
-  renderAccountListUI();
-  renderBalanceGridUI();
-  renderNetWorthChart();
-}
-
-function deleteAccount(name) {
-  if (!confirm(`Delete account "${name}"? Its entered balances will be removed too.`)) return;
-  accountList = accountList.filter(a => a !== name);
-  Object.keys(accountBalances).forEach(month => {
-    if (accountBalances[month]) delete accountBalances[month][name];
-  });
-  markUnsaved();
-  renderAccountListUI();
-  renderBalanceGridUI();
-  renderNetWorthChart();
-}
-
-function renderAccountListUI() {
-  // Keep the balance-import account picker in sync with the account list, preserving the
-  // current selection if it's still valid.
-  const importSelect = document.getElementById('balance-import-account-select');
-  const prevSelected = importSelect.value;
-  importSelect.innerHTML = '<option value="">Select an account…</option>' +
-    accountList.map(a => `<option value="${escapeHtml(a)}">${escapeHtml(a)}</option>`).join('');
-  if (accountList.includes(prevSelected)) importSelect.value = prevSelected;
-
-  const wrap = document.getElementById('account-list-wrap');
-  wrap.innerHTML = '';
-  if (!accountList.length) {
-    const empty = document.createElement('div');
-    empty.style.cssText = 'color: var(--text-dim); font-size: 13px;';
-    empty.textContent = 'No accounts yet — add one to start tracking balances.';
-    wrap.appendChild(empty);
-    return;
-  }
-  accountList.forEach(name => {
-    const row = document.createElement('div');
-    row.className = 'cat-tree-row';
-    const header = document.createElement('div');
-    header.className = 'cat-tree-header';
-    const nameSpan = document.createElement('span');
-    nameSpan.className = 'cat-tree-name';
-    nameSpan.textContent = name;
-    const actions = document.createElement('span');
-    actions.className = 'cat-tree-actions';
-    const renameBtn = document.createElement('button');
-    renameBtn.textContent = 'Rename';
-    renameBtn.onclick = () => renameAccount(name);
-    const deleteBtn = document.createElement('button');
-    deleteBtn.textContent = 'Delete';
-    deleteBtn.onclick = () => deleteAccount(name);
-    actions.append(renameBtn, deleteBtn);
-    header.append(nameSpan, actions);
-    row.appendChild(header);
-    wrap.appendChild(row);
-  });
-}
-
-// Union of months with transactions and months with entered balance data — a month can have
-// balance data with no transactions at all (e.g. history predating this app), so this can't
-// just reuse sortedMonthList() alone.
+// Union of months with transactions and months with an imported Sparkonto balance — a month can
+// have balance data with no transactions in it at all (e.g. a Sparkonto Saldo entry for a month
+// where nothing else happened), so this can't just reuse sortedMonthList() alone.
 function netWorthMonths() {
   const months = new Set([...sortedMonthList(), ...Object.keys(accountBalances)]);
   return [...months].sort((a, b) => monthSortKey(a) - monthSortKey(b));
-}
-
-function addBalanceMonth() {
-  const raw = (prompt('Add a month (format: Mon-YY, e.g. "Jan-26"):') || '').trim();
-  if (!raw) return;
-  const parts = raw.split('-');
-  const abbr = parts[0] ? parts[0].charAt(0).toUpperCase() + parts[0].slice(1, 3).toLowerCase() : '';
-  const yy = parts[1] || '';
-  if (parts.length !== 2 || !MONTH_ABBR.includes(abbr) || !/^\d{2}$/.test(yy)) {
-    showToast('Use the format "Mon-YY", e.g. "Jan-26".', 'error');
-    return;
-  }
-  const normalized = abbr + '-' + yy;
-  if (!accountBalances[normalized]) accountBalances[normalized] = {};
-  markUnsaved();
-  renderBalanceGridUI();
-  renderNetWorthChart();
-}
-
-function setBalance(month, account, rawValue) {
-  const amount = parseFloat(rawValue);
-  if (!accountBalances[month]) accountBalances[month] = {};
-  if (!rawValue || isNaN(amount)) delete accountBalances[month][account];
-  else accountBalances[month][account] = amount;
-  markUnsaved();
-  renderNetWorthChart();
-}
-
-function renderBalanceGridUI() {
-  const wrap = document.getElementById('balance-grid-wrap');
-  wrap.innerHTML = '';
-  if (!accountList.length) {
-    const empty = document.createElement('div');
-    empty.style.cssText = 'color: var(--text-dim); font-size: 13px;';
-    empty.textContent = 'Add an account above to start entering balances.';
-    wrap.appendChild(empty);
-    return;
-  }
-
-  const months = netWorthMonths().slice().reverse(); // most recent first, easiest to keep up to date
-  const scrollWrap = document.createElement('div');
-  scrollWrap.className = 'table-scroll';
-  const table = document.createElement('table');
-  table.className = 'balance-grid-table';
-  const thead = document.createElement('thead');
-  const headRow = document.createElement('tr');
-  headRow.innerHTML = `<th>Month</th>` + accountList.map(a => `<th>${escapeHtml(a)}</th>`).join('');
-  thead.appendChild(headRow);
-  table.appendChild(thead);
-  const tbody = document.createElement('tbody');
-  months.forEach(month => {
-    const tr = document.createElement('tr');
-    const monthTd = document.createElement('td');
-    monthTd.textContent = month;
-    tr.appendChild(monthTd);
-    accountList.forEach(acct => {
-      const td = document.createElement('td');
-      const input = document.createElement('input');
-      input.type = 'number';
-      input.className = 'balance-input';
-      input.placeholder = 'kr';
-      const value = accountBalances[month] && accountBalances[month][acct];
-      input.value = (value || value === 0) ? value : '';
-      input.addEventListener('change', () => setBalance(month, acct, input.value));
-      td.appendChild(input);
-      tr.appendChild(td);
-    });
-    tbody.appendChild(tr);
-  });
-  table.appendChild(tbody);
-  scrollWrap.appendChild(table);
-  wrap.appendChild(scrollWrap);
 }
 
 // Running balance for a Sparkonto-tracked "pot" (ISK / external savings / fixed-term deposit) —
@@ -2261,14 +2071,18 @@ function computeFlowBucketBalances(bucketKey) {
 
 function renderNetWorthChart() {
   const months = netWorthMonths();
-  const datasets = accountList.map((acct, idx) => ({
-    label: acct,
-    data: months.map(m => (accountBalances[m] && accountBalances[m][acct]) || 0),
-    backgroundColor: colorForIndex(idx),
-    stack: 'balance',
-    type: 'bar',
-    yAxisID: 'y'
-  }));
+  const datasets = [];
+  const hasSparkontoBalance = months.some(m => accountBalances[m] && (NET_WORTH_ACCOUNT in accountBalances[m]));
+  if (hasSparkontoBalance) {
+    datasets.push({
+      label: NET_WORTH_ACCOUNT,
+      data: months.map(m => (accountBalances[m] && accountBalances[m][NET_WORTH_ACCOUNT]) || 0),
+      backgroundColor: colorForIndex(0),
+      stack: 'balance',
+      type: 'bar',
+      yAxisID: 'y'
+    });
+  }
 
   // Pots tracked purely from Sparkonto transactions, not the manual balance grid — skipped
   // entirely if the user has no such transactions (e.g. hasn't imported Sparkonto data), so
@@ -2289,7 +2103,7 @@ function renderNetWorthChart() {
     datasets.push({
       label: bucket.label,
       data,
-      backgroundColor: colorForIndex(accountList.length + idx),
+      backgroundColor: colorForIndex((hasSparkontoBalance ? 1 : 0) + idx),
       stack: 'balance',
       type: 'bar',
       yAxisID: 'y'
@@ -2383,47 +2197,11 @@ function renderNetWorthChart() {
   }
 }
 
-// ============================================================
-// BALANCE HISTORY IMPORT (Net Worth card)
-// ============================================================
-// Parses any Nordea account export with a "Saldo" (balance) column — not specific to savings
-// accounts, since checking/ISK-linked/loan account exports share the same shape. Only pulls the
-// date and running balance; unlike the transaction-import parsers, categorization is irrelevant
-// here — the goal is month-end balances, not spend tracking.
-function parseAccountBalanceCSV(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      try {
-        let text = e.target.result;
-        if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1); // strip BOM
-        const lines = text.split(/\r?\n/).filter(l => l.trim());
-        const header = lines[0].split(';');
-        const idx = { date: header.indexOf('Bokföringsdag'), saldo: header.indexOf('Saldo') };
-        if (idx.date === -1 || idx.saldo === -1) {
-          reject(new Error('Missing "Bokföringsdag"/"Saldo" columns — is this a Nordea account export?'));
-          return;
-        }
-        const rows = [];
-        for (let i = 1; i < lines.length; i++) {
-          const cols = lines[i].split(';');
-          if (cols.length < header.length) continue;
-          const dateStr = (cols[idx.date] || '').trim().replace(/\//g, '-');
-          const saldoStr = (cols[idx.saldo] || '').replace(/\s/g, '').replace(',', '.');
-          const balance = parseFloat(saldoStr);
-          if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr) || isNaN(balance)) continue;
-          rows.push({ txn_date: dateStr, balance });
-        }
-        resolve(rows);
-      } catch (err) { reject(err); }
-    };
-    reader.onerror = reject;
-    reader.readAsText(file, 'utf-8');
-  });
-}
-
 // For each calendar month present, keeps the balance from that month's latest-dated row — the
 // "as of the last known transaction that month" snapshot, not a sum or average across the month.
+// Reused by the Sparkonto transaction import (see handleFile/saveImport) to derive the Net
+// Worth chart's Sparkonto balance bar straight from the same file's Saldo column — no separate
+// balance-history upload needed.
 function extractMonthEndBalances(rows) {
   const byMonth = {};
   rows.forEach(r => {
@@ -2435,66 +2213,6 @@ function extractMonthEndBalances(rows) {
   const result = {};
   Object.keys(byMonth).forEach(m => { result[m] = byMonth[m].balance; });
   return result;
-}
-
-function setupBalanceImportUI() {
-  const dropZone = document.getElementById('balance-drop-zone');
-  const fileInput = document.getElementById('balance-file-input');
-
-  dropZone.addEventListener('click', () => fileInput.click());
-  dropZone.addEventListener('dragover', (e) => { e.preventDefault(); dropZone.classList.add('dragover'); });
-  dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
-  dropZone.addEventListener('drop', (e) => {
-    e.preventDefault();
-    dropZone.classList.remove('dragover');
-    if (e.dataTransfer.files.length) handleBalanceFile(e.dataTransfer.files[0]);
-  });
-  fileInput.addEventListener('change', (e) => {
-    if (e.target.files.length) handleBalanceFile(e.target.files[0]);
-  });
-}
-
-async function handleBalanceFile(file) {
-  const account = document.getElementById('balance-import-account-select').value;
-  if (!account) {
-    showToast('Select which account these balances belong to first.', 'error');
-    return;
-  }
-  setStatus('Reading balance history…');
-  try {
-    const rows = await parseAccountBalanceCSV(file);
-    const monthly = extractMonthEndBalances(rows);
-    const months = Object.keys(monthly).sort((a, b) => monthSortKey(a) - monthSortKey(b));
-    setStatus('');
-
-    if (!months.length) {
-      showToast('No usable rows found in that file.', 'error');
-      return;
-    }
-
-    const overlapping = months.filter(m => accountBalances[m] && (account in accountBalances[m]));
-    const overwriteNote = overlapping.length
-      ? ` This will overwrite ${overlapping.length} existing entr${overlapping.length === 1 ? 'y' : 'ies'} for "${account}".`
-      : '';
-    const ok = confirm(
-      `Import ${months.length} month-end balance${months.length === 1 ? '' : 's'} for "${account}" ` +
-      `(${months[0]} to ${months[months.length - 1]})?${overwriteNote}`
-    );
-    if (!ok) return;
-
-    months.forEach(m => {
-      if (!accountBalances[m]) accountBalances[m] = {};
-      accountBalances[m][account] = monthly[m];
-    });
-    markUnsaved();
-    renderBalanceGridUI();
-    renderNetWorthChart();
-    showToast(`Imported ${months.length} month${months.length === 1 ? '' : 's'} of balances for "${account}".`, 'success');
-  } catch (err) {
-    setStatus('');
-    showToast('Import failed: ' + err.message, 'error');
-    console.error(err);
-  }
 }
 
 // ============================================================
@@ -2563,7 +2281,18 @@ async function handleFile(file) {
     const dedupedSet = new Set(deduped);
     const dedupedUnmatched = unmatched.filter(r => dedupedSet.has(r));
 
-    pendingImport = { results: deduped, unmatched: dedupedUnmatched, format: selectedFormat };
+    // Sparkonto exports carry a running Saldo column too — piggyback on the same file to derive
+    // the Net Worth chart's Sparkonto balance bar, no separate balance-history upload needed.
+    // Staged on pendingImport (not applied yet) so nothing is committed until saveImport() runs.
+    let balanceUpdates = null;
+    if (selectedFormat === 'sparkonto') {
+      const balanceRows = rawRows
+        .filter(r => r.Saldo != null && !isNaN(r.Saldo))
+        .map(r => ({ txn_date: r.Bokforingsdag, balance: r.Saldo }));
+      if (balanceRows.length) balanceUpdates = extractMonthEndBalances(balanceRows);
+    }
+
+    pendingImport = { results: deduped, unmatched: dedupedUnmatched, format: selectedFormat, balanceUpdates };
     renderImportResults(deduped, dedupedUnmatched, duplicateCount);
     setStatus('');
   } catch (err) {
@@ -2642,7 +2371,8 @@ function parsePersonkontoCSV(file) {
         const idx = {
           date: header.indexOf('Bokföringsdag'),
           amount: header.indexOf('Belopp'),
-          rubrik: header.indexOf('Rubrik')
+          rubrik: header.indexOf('Rubrik'),
+          saldo: header.indexOf('Saldo')
         };
         const rows = [];
         for (let i = 1; i < lines.length; i++) {
@@ -2650,10 +2380,14 @@ function parsePersonkontoCSV(file) {
           if (cols.length < header.length) continue;
           const dateStr = cols[idx.date].replace(/\//g, '-');
           const amountStr = cols[idx.amount].replace(/\s/g, '').replace(',', '.');
+          // Saldo isn't used for Personkonto imports (categorization only), but Sparkonto imports
+          // reuse it to derive the Net Worth chart's balance bar — see handleFile.
+          const saldoStr = idx.saldo > -1 ? (cols[idx.saldo] || '').replace(/\s/g, '').replace(',', '.') : '';
           rows.push({
             Bokforingsdag: dateStr,
             Belopp: parseFloat(amountStr),
-            Rubrik: cols[idx.rubrik]
+            Rubrik: cols[idx.rubrik],
+            Saldo: saldoStr ? parseFloat(saldoStr) : null
           });
         }
         resolve(rows.filter(r => !isNaN(r.Belopp)));
@@ -2755,7 +2489,10 @@ async function saveImport() {
     }
   });
 
-  // merge: assign new ids, append to dataset
+  // merge: assign new ids, append to dataset. _flowBucket/_rawSign (Sparkonto's ISK/external-
+  // savings/fixed-term-deposit tagging — see parseSparkontoRows) are carried through explicitly,
+  // not via a blind spread, so other internal parser-only fields (e.g. _forcedCategory) don't
+  // leak into what's persisted to Drive.
   const maxId = dataset.reduce((m, i) => Math.max(m, i.id), 0);
   const merged = pendingImport.results.map((r, i) => ({
     id: maxId + 1 + i,
@@ -2764,7 +2501,8 @@ async function saveImport() {
     amount: r.amount,
     category: r.category,
     txn_date: r.txn_date,
-    card: r.card
+    card: r.card,
+    ...(r._flowBucket ? { _flowBucket: r._flowBucket, _rawSign: r._rawSign } : {})
   }));
 
   // Compute the merged state locally first; don't touch the live dataset/overrides
@@ -2779,6 +2517,26 @@ async function saveImport() {
     await updateFileContent(fileIds['canonical_overrides.json'], JSON.stringify(nextOverrides, null, 2));
     dataset = nextDataset;
     overrides = nextOverrides;
+
+    // Sparkonto's Saldo-derived balances (see handleFile) — best-effort: the transactions above
+    // are already safely saved, so a failure here just means the Net Worth chart's Sparkonto bar
+    // won't reflect this import yet, not a lost import.
+    if (pendingImport.balanceUpdates) {
+      Object.keys(pendingImport.balanceUpdates).forEach(m => {
+        if (!accountBalances[m]) accountBalances[m] = {};
+        accountBalances[m][NET_WORTH_ACCOUNT] = pendingImport.balanceUpdates[m];
+      });
+      try {
+        if (fileIds['account_balances.json']) {
+          await updateFileContent(fileIds['account_balances.json'], JSON.stringify(accountBalances, null, 2));
+        } else {
+          await createFileInFolder('account_balances.json', JSON.stringify(accountBalances, null, 2));
+        }
+      } catch (e) {
+        console.error('Could not save updated Sparkonto balances — will retry on next import/save.', e);
+      }
+    }
+
     setStatus(`Saved. ${merged.length} transactions added.`);
     showToast(`Saved ${merged.length} transactions to Drive.`, 'success');
     pendingImport = null;
