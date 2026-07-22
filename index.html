@@ -726,6 +726,7 @@ async function loadAllData() {
       }
     }
 
+    const syntheticLoanCount = removeSyntheticLoanEntries();
     const mortgageMigrationCount = migrateMortgageSubcategories();
 
     setStatus(`Loaded ${dataset.length} transactions.`);
@@ -738,6 +739,14 @@ async function loadAllData() {
         `Removed ${invalidCount} corrupted transaction${invalidCount === 1 ? '' : 's'} found in your data ` +
         `(e.g. a bank export's summary row that got imported by mistake). Click "Save to Drive" to make this permanent.`,
         'error'
+      );
+    }
+    if (syntheticLoanCount) {
+      markUnsaved();
+      showToast(
+        `Removed ${syntheticLoanCount} placeholder loan transaction${syntheticLoanCount === 1 ? '' : 's'} ` +
+        `(estimates from before real Sparkonto/Personkonto tracking existed). Click "Save to Drive" to make this permanent.`,
+        'success'
       );
     }
     if (mortgageMigrationCount) {
@@ -1766,8 +1775,23 @@ function migrateMortgageSubcategories() {
   if (entry) {
     entry.subs = (entry.subs || []).filter(s => s !== 'Interest' && s !== 'Amortization');
     if (!entry.subs.includes('Amortization/interest')) entry.subs.unshift('Amortization/interest');
+    if (!entry.subs.includes('Avgift')) entry.subs.splice(1, 0, 'Avgift');
   }
   return count;
+}
+
+// One-time cleanup: some months have placeholder "loan" transactions from generateLoanEntries()
+// (categorization-engine.js) — fixed monthly estimates (interest/amortization/utilities) entered
+// before real Sparkonto/Personkonto tracking covered this. They're reliably identifiable by
+// card: 'Loan', a value no real bank/card import ever produces, regardless of whatever category
+// they've since been renamed/merged into. Now that Sparkonto's real per-tranche rollover and
+// Personkonto's real Bankgiro fee (see parsePersonkontoRows) cover the same ground with actual
+// transactions, these estimates are redundant — removed outright, not migrated anywhere. Runs on
+// every load; a no-op once none remain.
+function removeSyntheticLoanEntries() {
+  const before = dataset.length;
+  dataset = dataset.filter(t => t.card !== 'Loan');
+  return before - dataset.length;
 }
 
 function addCategory() {
