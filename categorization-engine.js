@@ -9,9 +9,12 @@ const CATEGORY_TREE = [
   // "Merge into..." action (merge "Bills/Utilities" into "Housing/Mortgage > Utilities").
   // Interest and Amortization used to be separate subs, but Sparkonto's per-tranche mortgage
   // rollover (see parseSparkontoRows) can't cleanly split between them, so both are tracked as
-  // one combined "Amortization/interest" sub instead — see migrateMortgageSubcategories() in
-  // index.html for how existing data on the old subs gets moved over.
-  { key: "Housing/Mortgage", subs: ["Amortization/interest", "Utilities"] },
+  // one combined "Amortization/interest" sub instead, sourced only from real Sparkonto rollover
+  // transactions — see migrateMortgageSubcategories() in index.html for how existing data on the
+  // old subs gets moved over. Avgift is the recurring Personkonto Bankgiro fee (see
+  // parsePersonkontoRows) — a real transaction, unlike the old placeholder loan entries removed
+  // by removeSyntheticLoanEntries() in index.html.
+  { key: "Housing/Mortgage", subs: ["Amortization/interest", "Avgift", "Utilities"] },
   { key: "Greece", subs: null },
   { key: "Transportation", subs: null },
   { key: "Flights & Travel Booking", subs: null },
@@ -140,8 +143,14 @@ function parsePersonkontoRows(rows) {
     } else if (/^Nordea Vardagspaket/i.test(rubrik)) {
       merchant = 'Nordea Vardagspaket';
       category = 'Excluded';
+    } else if (/^Betalning BG/i.test(rubrik) && amount <= -3600 && amount >= -4310) {
+      // The recurring mortgage-related Bankgiro fee ("Avgift") — the only "Betalning BG" payment
+      // that falls in this narrow amount range every month; other BG/PG payments outside it are
+      // left uncategorized like before, resolved downstream.
+      merchant = 'Mortgage Avgift (Bankgiro)';
+      category = 'Housing/Mortgage > Avgift';
     }
-    // Autogiro, Betalning BG/PG, Open Banking, Kontantuttag: leave category null, resolved downstream
+    // Autogiro, other Betalning BG/PG, Open Banking, Kontantuttag: leave category null, resolved downstream
 
     out.push({
       txn_date: row.Bokforingsdag,
