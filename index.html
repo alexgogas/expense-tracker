@@ -1740,6 +1740,28 @@ function migrateMortgageSubcategories() {
     count += categoryInUseCount(old, false);
     migrateCategoryReferences(old, NEW_SUB, false);
   });
+
+  // Legacy flat top-level category from before the nested Housing/Mortgage tree existed — its
+  // name has "/Utilities" baked into the literal top-level key itself (not a real
+  // "Housing/Mortgage" > "Utilities" split), and whatever subs it has (Interest/Amortization/
+  // Avgift, etc.) are all mortgage costs, same as the values above. This is a collapse (many
+  // values down to one), not a rename, so each exact value found is migrated individually with
+  // prefixMatch:false — migrateCategoryReferences's prefixMatch:true mode instead PRESERVES the
+  // sub-path after the old prefix (right for renames, wrong here: it would turn "Legacy > Sub"
+  // into "Housing/Mortgage > Amortization/interest > Sub" instead of collapsing it).
+  const LEGACY_TOP = 'Housing/Mortgage/Utilities';
+  const legacyValues = new Set();
+  const isLegacy = v => v === LEGACY_TOP || (typeof v === 'string' && v.startsWith(LEGACY_TOP + ' > '));
+  dataset.forEach(t => { if (isLegacy(t.category)) legacyValues.add(t.category); });
+  Object.values(overrides).forEach(v => { if (isLegacy(v)) legacyValues.add(v); });
+  Object.values(learnedLookup).forEach(v => { if (isLegacy(v)) legacyValues.add(v); });
+  Object.keys(budgets).forEach(k => { if (isLegacy(k)) legacyValues.add(k); });
+  legacyValues.forEach(old => {
+    count += categoryInUseCount(old, false);
+    migrateCategoryReferences(old, NEW_SUB, false);
+  });
+  categoryTree = categoryTree.filter(c => c.key !== LEGACY_TOP);
+
   const entry = categoryTree.find(c => c.key === 'Housing/Mortgage');
   if (entry) {
     entry.subs = (entry.subs || []).filter(s => s !== 'Interest' && s !== 'Amortization');
