@@ -2265,14 +2265,23 @@ async function handleFile(file) {
 
     // Skip transactions that already exist in the dataset, or repeat within this same file
     // (same date, merchant, amount and card), so re-importing an overlapping statement is a no-op.
-    const existingKeys = new Set(dataset.map(transactionKey));
+    const existingByKey = new Map(dataset.map(t => [transactionKey(t), t]));
     const seenInBatch = new Set();
     const deduped = [];
+    const flowBucketUpgrades = [];
     let duplicateCount = 0;
     results.forEach(r => {
       const key = transactionKey(r);
-      if (existingKeys.has(key) || seenInBatch.has(key)) {
+      const existing = existingByKey.get(key);
+      if (existing || seenInBatch.has(key)) {
         duplicateCount++;
+        // Upgrade path: a Sparkonto transaction saved before ISK/external-savings/fixed-term-
+        // deposit tracking existed has no _flowBucket of its own. Re-importing the same file
+        // now would otherwise just discard this duplicate forever, permanently blocking that
+        // pot's balance from ever being derived — so patch the existing record in instead.
+        if (existing && r._flowBucket && !existing._flowBucket) {
+          flowBucketUpgrades.push({ id: existing.id, flowBucket: r._flowBucket, rawSign: r._rawSign });
+        }
         return;
       }
       seenInBatch.add(key);
@@ -2292,8 +2301,14 @@ async function handleFile(file) {
       if (balanceRows.length) balanceUpdates = extractMonthEndBalances(balanceRows);
     }
 
-    pendingImport = { results: deduped, unmatched: dedupedUnmatched, format: selectedFormat, balanceUpdates };
-    renderImportResults(deduped, dedupedUnmatched, duplicateCount);
+    pendingImport = {
+      results: deduped, unmatched: dedupedUnmatched, format: selectedFormat, balanceUpdates, flowBucketUpgrades
+    };
+    // Even with zero new transactions (a full re-import of an already-saved file), there may
+    // still be Sparkonto balance/pot-tracking data worth saving — see the "Upgrade path" comment
+    // above and the Saldo-derived balanceUpdates just below — so this isn't gated on deduped.length.
+    const hasPendingSideEffects = !!(balanceUpdates && Object.keys(balanceUpdates).length) || flowBucketUpgrades.length > 0;
+    renderImportResults(deduped, dedupedUnmatched, duplicateCount, hasPendingSideEffects);
     setStatus('');
   } catch (err) {
     setStatus('');
@@ -2398,9 +2413,10 @@ function parsePersonkontoCSV(file) {
   });
 }
 
-function renderImportResults(results, unmatched, duplicateCount) {
+function renderImportResults(results, unmatched, duplicateCount, hasPendingSideEffects) {
   const container = document.getElementById('import-results');
   const total = results.reduce((s, r) => s + r.amount, 0);
+  const canSave = results.length > 0 || hasPendingSideEffects;
 
   let html = `<div class="stat-row" style="margin-top:16px;">
     <div class="stat"><div class="label">New</div><div class="value">${results.length}</div></div>
@@ -2422,8 +2438,11 @@ function renderImportResults(results, unmatched, duplicateCount) {
     html += `</tbody></table>`;
   }
 
-  if (results.length) {
-    html += `<div style="margin-top:16px; display:flex; gap:10px;">
+  if (canSave) {
+    const note = results.length ? '' : `<div style="margin-bottom:10px; color: var(--text-dim); font-size: 13px;">
+      No new transactions, but this file has Sparkonto balance/pot-tracking data worth saving.
+    </div>`;
+    html += `${note}<div style="margin-top:16px; display:flex; gap:10px;">
       <button class="primary" id="save-import-btn">Save to Drive</button>
       <button id="discard-import-btn">Discard</button>
     </div>`;
@@ -2436,7 +2455,7 @@ function renderImportResults(results, unmatched, duplicateCount) {
 
   container.innerHTML = html;
 
-  if (results.length) {
+  if (canSave) {
     document.getElementById('save-import-btn').addEventListener('click', saveImport);
   }
   document.getElementById('discard-import-btn').addEventListener('click', () => {
@@ -2505,11 +2524,20 @@ async function saveImport() {
     ...(r._flowBucket ? { _flowBucket: r._flowBucket, _rawSign: r._rawSign } : {})
   }));
 
+  // Patch _flowBucket/_rawSign onto already-saved duplicate transactions that predate this
+  // tracking (see the "Upgrade path" comment in handleFile) — everything else about the record
+  // is untouched.
+  const upgrades = pendingImport.flowBucketUpgrades || [];
+  const upgradesById = new Map(upgrades.map(u => [u.id, u]));
+
   // Compute the merged state locally first; don't touch the live dataset/overrides
   // until the Drive write actually succeeds, so a failed save doesn't leave the app
   // pointing at unsaved local data (which would also duplicate rows on retry) while
   // the charts silently go stale.
-  const nextDataset = dataset.concat(merged);
+  const nextDataset = dataset.map(t => {
+    const u = upgradesById.get(t.id);
+    return u ? { ...t, _flowBucket: u.flowBucket, _rawSign: u.rawSign } : t;
+  }).concat(merged);
   const nextOverrides = newOverrides;
 
   try {
@@ -2537,8 +2565,9 @@ async function saveImport() {
       }
     }
 
-    setStatus(`Saved. ${merged.length} transactions added.`);
-    showToast(`Saved ${merged.length} transactions to Drive.`, 'success');
+    const upgradeNote = upgrades.length ? ` Backfilled pot-tracking data onto ${upgrades.length} existing transaction${upgrades.length === 1 ? '' : 's'}.` : '';
+    setStatus(`Saved. ${merged.length} transactions added.${upgradeNote}`);
+    showToast(`Saved ${merged.length} transactions to Drive.${upgradeNote}`, 'success');
     pendingImport = null;
     document.getElementById('import-results').innerHTML = '';
     renderOverview();
