@@ -2230,11 +2230,14 @@ function renderNetWorthChart() {
     maintainAspectRatio: false,
     scales: {
       x: { stacked: true, ticks: { color: '#9aa4b2' }, grid: { color: '#2a303a' } },
-      // beginAtZero matters here: without it, Chart.js can round the axis's auto-computed min
-      // down below the actual data (e.g. to -50000) purely to land on "nice" tick intervals for
-      // a large range, even though every real value is >= 0.
-      y: { stacked: true, position: 'left', beginAtZero: true, ticks: { color: '#9aa4b2' }, grid: { color: '#2a303a' } },
-      y1: { position: 'right', beginAtZero: true, ticks: { color: '#9aa4b2' }, grid: { drawOnChartArea: false } }
+      // A hard min:0 (not just beginAtZero, which only guarantees 0 is *included* in the range —
+      // it still lets the axis extend further negative to fit an actual negative data point,
+      // which the Trend line's linear fit can produce for early months on a volatile series).
+      // Total savings/mortgage cost/salary are never meaningfully negative, so clamping the
+      // floor at 0 is correct here; if the fitted Trend line dips below it, it's simply clipped
+      // at the axis edge rather than dragging the whole chart's scale down with it.
+      y: { stacked: true, position: 'left', min: 0, ticks: { color: '#9aa4b2' }, grid: { color: '#2a303a' } },
+      y1: { position: 'right', min: 0, ticks: { color: '#9aa4b2' }, grid: { drawOnChartArea: false } }
     },
     plugins: {
       legend: { labels: { color: '#e8eaed', boxWidth: 12, font: { size: 11 } }, onClick: legendDoubleClickHandler() }
