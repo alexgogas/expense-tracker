@@ -1800,14 +1800,26 @@ function migrateMortgageSubcategories() {
     treeChanged = true;
   }
 
-  const entry = categoryTree.find(c => c.key === 'Housing/Mortgage');
-  if (entry) {
-    const before = JSON.stringify(entry.subs);
-    entry.subs = (entry.subs || []).filter(s => s !== 'Interest' && s !== 'Amortization');
-    if (!entry.subs.includes('Amortization/interest')) entry.subs.unshift('Amortization/interest');
-    if (!entry.subs.includes('Avgift')) entry.subs.splice(1, 0, 'Avgift');
-    if (JSON.stringify(entry.subs) !== before) treeChanged = true;
+  // The Categories UI and every category <select> dropdown (leafCategories()) are both driven
+  // purely by categoryTree, not by what categories transactions actually use — a transaction can
+  // carry a category string with no backing tree entry at all (e.g. set via an old override or a
+  // forced-category rule, never through addCategory()/addSubcategory()) and it'll group correctly
+  // in the Transactions browser while being completely absent from the Categories section and
+  // every dropdown. That's what happened here: "Housing/Mortgage" itself had no tree entry, so
+  // the whole block below was silently skipped and never created one. Create it if missing,
+  // rather than assuming it's already there.
+  let entry = categoryTree.find(c => c.key === 'Housing/Mortgage');
+  if (!entry) {
+    entry = { key: 'Housing/Mortgage', subs: [] };
+    categoryTree.push(entry);
+    treeChanged = true;
   }
+  const before = JSON.stringify(entry.subs);
+  entry.subs = (entry.subs || []).filter(s => s !== 'Interest' && s !== 'Amortization');
+  if (!entry.subs.includes('Amortization/interest')) entry.subs.unshift('Amortization/interest');
+  if (!entry.subs.includes('Avgift')) entry.subs.splice(1, 0, 'Avgift');
+  if (!entry.subs.includes('Utilities')) entry.subs.push('Utilities');
+  if (JSON.stringify(entry.subs) !== before) treeChanged = true;
   return { count, treeChanged };
 }
 
