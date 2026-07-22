@@ -2474,33 +2474,61 @@ function renderNetWorthChart() {
   const lastActualTotal = totalPerMonth.length ? totalPerMonth[totalPerMonth.length - 1] : 0;
   const lastRealMonth = months.length ? months[months.length - 1] : null;
 
+  // Secondary scenario: identical income assumption (regular salary through REGULAR_SALARY_CUTOFF,
+  // then the same a-kassa step-down), but budget also drops by BUDGET_CUT_AFTER_CUTOFF starting
+  // the month after the cutoff — pairs a spending cut with the income cut, rather than assuming
+  // spend stays flat while income falls. Computed in the same pass as the primary projection so
+  // both trajectories share identical month labels and never drift apart from rounding/iteration
+  // differences.
+  const BUDGET_CUT_AFTER_CUTOFF = 7000;
+
   const projectedMonths = [];
   const projectedValues = [];
+  const reducedBudgetValues = [];
   if (lastRealMonth && monthSortKey(netWorthRangeFilter.to) > monthSortKey(lastRealMonth)) {
     let cursor = lastRealMonth;
     let running = lastActualTotal;
+    let runningReducedBudget = lastActualTotal;
     while (monthSortKey(cursor) < monthSortKey(netWorthRangeFilter.to)) {
       cursor = nextMonthLabel(cursor);
-      running += projectedIncomeForMonth(cursor) - totalMonthlyBudget;
+      const income = projectedIncomeForMonth(cursor);
+      const afterCutoff = monthSortKey(cursor) > monthSortKey(REGULAR_SALARY_CUTOFF);
+      running += income - totalMonthlyBudget;
+      runningReducedBudget += income - (afterCutoff ? totalMonthlyBudget - BUDGET_CUT_AFTER_CUTOFF : totalMonthlyBudget);
       projectedMonths.push(cursor);
       projectedValues.push(running);
+      reducedBudgetValues.push(runningReducedBudget);
     }
   }
 
   // Every existing dataset needs null padding for the new future months so Chart.js doesn't
   // misalign them against the extended labels array.
   datasets.forEach(d => { d.data = d.data.concat(projectedMonths.map(() => null)); });
-  const projectionData = months.map((_, idx) => idx === months.length - 1 ? lastActualTotal : null)
-    .concat(projectedValues);
+  const connectingPoint = months.map((_, idx) => idx === months.length - 1 ? lastActualTotal : null);
   datasets.push({
     label: 'Projected savings (salary, then a-kassa step-down)',
-    data: projectionData,
+    data: connectingPoint.concat(projectedValues),
     type: 'line',
     stack: 'projection-line',
     borderColor: '#c792ea',
     backgroundColor: '#c792ea',
     borderWidth: 2,
     borderDash: [6, 4],
+    pointRadius: 2,
+    tension: 0,
+    spanGaps: false,
+    fill: false,
+    yAxisID: 'y'
+  });
+  datasets.push({
+    label: `Projected savings (budget −7,000 kr/mo after ${REGULAR_SALARY_CUTOFF})`,
+    data: connectingPoint.concat(reducedBudgetValues),
+    type: 'line',
+    stack: 'projection-line-2',
+    borderColor: '#ffb454',
+    backgroundColor: '#ffb454',
+    borderWidth: 2,
+    borderDash: [2, 3],
     pointRadius: 2,
     tension: 0,
     spanGaps: false,
