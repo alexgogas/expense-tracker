@@ -7,7 +7,11 @@ const CATEGORY_TREE = [
   // Utilities live only here now, not as a separate flat "Bills/Utilities" top-level category —
   // existing data already filed under the old category can be moved with the Categories card's
   // "Merge into..." action (merge "Bills/Utilities" into "Housing/Mortgage > Utilities").
-  { key: "Housing/Mortgage", subs: ["Interest", "Amortization", "Utilities"] },
+  // Interest and Amortization used to be separate subs, but Sparkonto's per-tranche mortgage
+  // rollover (see parseSparkontoRows) can't cleanly split between them, so both are tracked as
+  // one combined "Amortization/interest" sub instead — see migrateMortgageSubcategories() in
+  // index.html for how existing data on the old subs gets moved over.
+  { key: "Housing/Mortgage", subs: ["Amortization/interest", "Utilities"] },
   { key: "Greece", subs: null },
   { key: "Transportation", subs: null },
   { key: "Flights & Travel Booking", subs: null },
@@ -160,6 +164,9 @@ function parseSparkontoRows(rows) {
   const out = [];
   for (const row of rows) {
     const rubrik = String(row.Rubrik || '').trim();
+    // Reference numbers appear both spaced ("4716 74 80297") and unspaced ("47167480297") in
+    // real exports — match against a whitespace-stripped copy so either form is recognized.
+    const rubrikCompact = rubrik.replace(/\s+/g, '');
     const amount = parseFloat(row.Belopp);
     let merchant = rubrik;
     let category = null;
@@ -173,10 +180,10 @@ function parseSparkontoRows(rows) {
 
     if (/^Omsättning lån/i.test(rubrik)) {
       // Full loan rollover per tranche — this can't be cleanly split into interest vs.
-      // amortization from this data alone, so it's filed at the bare Housing/Mortgage category
-      // (no sub), alongside — not replacing — any Interest/Amortization entries recorded
-      // elsewhere (e.g. from a Personkonto import).
-      category = 'Housing/Mortgage';
+      // amortization from this data alone, so both are tracked as one combined subcategory
+      // (see CATEGORY_TREE's "Amortization/interest"), alongside — not replacing — any
+      // pre-existing entries recorded elsewhere (e.g. from a Personkonto import).
+      category = 'Housing/Mortgage > Amortization/interest';
     } else if (/^(Ny|Förfall) FASTRÄNTEPLACERING/i.test(rubrik)) {
       merchant = 'Fasträntplacering';
       category = 'Excluded'; // internal transfer to/from an owned fixed-term deposit, not spend
@@ -189,15 +196,15 @@ function parseSparkontoRows(rows) {
       category = 'Excluded';
     } else if (/^(Ränta|Preliminär skatt) \d{4}$/i.test(rubrik)) {
       category = 'Excluded'; // account-level annual interest/tax entries, not spend
-    } else if (rubrik.includes('4716 74 80297')) {
+    } else if (rubrikCompact.includes('47167480297')) {
       merchant = 'ISK transfer';
       category = 'Excluded'; // moving to another owned asset (ISK), not spend
       flowBucket = 'isk';
-    } else if (rubrik.includes('9750 14 57184') || /^UTTAG NML/i.test(rubrik)) {
+    } else if (rubrikCompact.includes('97501457184') || /^UTTAG NML/i.test(rubrik)) {
       merchant = 'External savings (9750 14 57184)';
       category = 'Excluded'; // temporarily held at another bank, still owned
       flowBucket = 'external-savings';
-    } else if (/^Överföring 3204 01 72718/i.test(rubrik)) {
+    } else if (/^Överföring/i.test(rubrik) && rubrikCompact.includes('32040172718')) {
       category = 'Excluded'; // transfer to/from the linked Personkonto
     } else if (/^Slutlikvid/i.test(rubrik) || rubrik === 'Insättning') {
       category = 'Excluded'; // one-off property purchase settlement
