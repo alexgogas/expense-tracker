@@ -2482,12 +2482,12 @@ function renderNetWorthChart() {
   // differences.
   const BUDGET_CUT_AFTER_CUTOFF = 7000;
 
-  // Third scenario: same income assumption again, but a second, independent budget cut — 9,000
-  // kr/mo starting IN (not after — "starting May 2028" is inclusive, unlike the first cut's
-  // "after Jul-27") BUDGET_CUT_2_CUTOFF. Independent of the secondary scenario's -7,000 cut: this
-  // is relative to the original totalMonthlyBudget, not stacked on top of it, so it reads as its
-  // own "what if I only cut spending starting later, but by more" scenario rather than a
-  // compounding third cut.
+  // Third scenario: same income assumption again, but a second budget cut STACKED on top of the
+  // secondary scenario's -7,000 — an additional -9,000 kr/mo starting IN (not after — "starting
+  // May 2028" is inclusive, unlike the first cut's "after Jul-27") BUDGET_CUT_2_CUTOFF. So this
+  // line matches the primary projection through Jul-27, matches the secondary projection from
+  // Aug-27 through Apr-28 (only the first cut active), then drops further to -16,000/mo total
+  // from May-28 onward once both cuts are in effect.
   const BUDGET_CUT_2_CUTOFF = 'May-28';
   const BUDGET_CUT_2_AMOUNT = 9000;
 
@@ -2505,9 +2505,12 @@ function renderNetWorthChart() {
       const income = projectedIncomeForMonth(cursor);
       const afterCutoff = monthSortKey(cursor) > monthSortKey(REGULAR_SALARY_CUTOFF);
       const afterCutoff2 = monthSortKey(cursor) >= monthSortKey(BUDGET_CUT_2_CUTOFF);
+      let budgetForThird = totalMonthlyBudget;
+      if (afterCutoff) budgetForThird -= BUDGET_CUT_AFTER_CUTOFF;
+      if (afterCutoff2) budgetForThird -= BUDGET_CUT_2_AMOUNT;
       running += income - totalMonthlyBudget;
       runningReducedBudget += income - (afterCutoff ? totalMonthlyBudget - BUDGET_CUT_AFTER_CUTOFF : totalMonthlyBudget);
-      runningReducedBudget2 += income - (afterCutoff2 ? totalMonthlyBudget - BUDGET_CUT_2_AMOUNT : totalMonthlyBudget);
+      runningReducedBudget2 += income - budgetForThird;
       projectedMonths.push(cursor);
       projectedValues.push(running);
       reducedBudgetValues.push(runningReducedBudget);
@@ -2550,7 +2553,7 @@ function renderNetWorthChart() {
     yAxisID: 'y'
   });
   datasets.push({
-    label: `Projected savings (budget −9,000 kr/mo from ${BUDGET_CUT_2_CUTOFF})`,
+    label: `Projected savings (budget −7,000 from ${REGULAR_SALARY_CUTOFF}, additional −9,000 from ${BUDGET_CUT_2_CUTOFF})`,
     data: connectingPoint.concat(reducedBudgetValues2),
     type: 'line',
     stack: 'projection-line-3',
