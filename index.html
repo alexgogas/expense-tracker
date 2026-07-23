@@ -2482,22 +2482,36 @@ function renderNetWorthChart() {
   // differences.
   const BUDGET_CUT_AFTER_CUTOFF = 7000;
 
+  // Third scenario: same income assumption again, but a second, independent budget cut — 9,000
+  // kr/mo starting IN (not after — "starting May 2028" is inclusive, unlike the first cut's
+  // "after Jul-27") BUDGET_CUT_2_CUTOFF. Independent of the secondary scenario's -7,000 cut: this
+  // is relative to the original totalMonthlyBudget, not stacked on top of it, so it reads as its
+  // own "what if I only cut spending starting later, but by more" scenario rather than a
+  // compounding third cut.
+  const BUDGET_CUT_2_CUTOFF = 'May-28';
+  const BUDGET_CUT_2_AMOUNT = 9000;
+
   const projectedMonths = [];
   const projectedValues = [];
   const reducedBudgetValues = [];
+  const reducedBudgetValues2 = [];
   if (lastRealMonth && monthSortKey(netWorthRangeFilter.to) > monthSortKey(lastRealMonth)) {
     let cursor = lastRealMonth;
     let running = lastActualTotal;
     let runningReducedBudget = lastActualTotal;
+    let runningReducedBudget2 = lastActualTotal;
     while (monthSortKey(cursor) < monthSortKey(netWorthRangeFilter.to)) {
       cursor = nextMonthLabel(cursor);
       const income = projectedIncomeForMonth(cursor);
       const afterCutoff = monthSortKey(cursor) > monthSortKey(REGULAR_SALARY_CUTOFF);
+      const afterCutoff2 = monthSortKey(cursor) >= monthSortKey(BUDGET_CUT_2_CUTOFF);
       running += income - totalMonthlyBudget;
       runningReducedBudget += income - (afterCutoff ? totalMonthlyBudget - BUDGET_CUT_AFTER_CUTOFF : totalMonthlyBudget);
+      runningReducedBudget2 += income - (afterCutoff2 ? totalMonthlyBudget - BUDGET_CUT_2_AMOUNT : totalMonthlyBudget);
       projectedMonths.push(cursor);
       projectedValues.push(running);
       reducedBudgetValues.push(runningReducedBudget);
+      reducedBudgetValues2.push(runningReducedBudget2);
     }
   }
 
@@ -2529,6 +2543,21 @@ function renderNetWorthChart() {
     backgroundColor: '#ffb454',
     borderWidth: 2,
     borderDash: [2, 3],
+    pointRadius: 2,
+    tension: 0,
+    spanGaps: false,
+    fill: false,
+    yAxisID: 'y'
+  });
+  datasets.push({
+    label: `Projected savings (budget −9,000 kr/mo from ${BUDGET_CUT_2_CUTOFF})`,
+    data: connectingPoint.concat(reducedBudgetValues2),
+    type: 'line',
+    stack: 'projection-line-3',
+    borderColor: '#82e0f9',
+    backgroundColor: '#82e0f9',
+    borderWidth: 2,
+    borderDash: [4, 2],
     pointRadius: 2,
     tension: 0,
     spanGaps: false,
