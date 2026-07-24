@@ -2491,15 +2491,27 @@ function renderNetWorthChart() {
   const BUDGET_CUT_2_CUTOFF = 'May-28';
   const BUDGET_CUT_2_AMOUNT = 9000;
 
+  // Fourth scenario: not a hypothetical assumption at all — extrapolates the ACTUAL average
+  // monthly change in total savings over the last 3 real months (or fewer if there isn't that
+  // much history yet, down to 2 months; flat if there's only 1), held constant going forward.
+  // A data-driven "if recent months just keep happening" read, distinct from the three
+  // budget/income scenarios above which are all built on hypothetical assumptions.
+  const recentWindow = Math.min(3, totalPerMonth.length - 1);
+  const recentMonthlyDelta = recentWindow > 0
+    ? (totalPerMonth[totalPerMonth.length - 1] - totalPerMonth[totalPerMonth.length - 1 - recentWindow]) / recentWindow
+    : 0;
+
   const projectedMonths = [];
   const projectedValues = [];
   const reducedBudgetValues = [];
   const reducedBudgetValues2 = [];
+  const recentTrendValues = [];
   if (lastRealMonth && monthSortKey(netWorthRangeFilter.to) > monthSortKey(lastRealMonth)) {
     let cursor = lastRealMonth;
     let running = lastActualTotal;
     let runningReducedBudget = lastActualTotal;
     let runningReducedBudget2 = lastActualTotal;
+    let runningRecentTrend = lastActualTotal;
     while (monthSortKey(cursor) < monthSortKey(netWorthRangeFilter.to)) {
       cursor = nextMonthLabel(cursor);
       const income = projectedIncomeForMonth(cursor);
@@ -2511,10 +2523,12 @@ function renderNetWorthChart() {
       running += income - totalMonthlyBudget;
       runningReducedBudget += income - (afterCutoff ? totalMonthlyBudget - BUDGET_CUT_AFTER_CUTOFF : totalMonthlyBudget);
       runningReducedBudget2 += income - budgetForThird;
+      runningRecentTrend += recentMonthlyDelta;
       projectedMonths.push(cursor);
       projectedValues.push(running);
       reducedBudgetValues.push(runningReducedBudget);
       reducedBudgetValues2.push(runningReducedBudget2);
+      recentTrendValues.push(runningRecentTrend);
     }
   }
 
@@ -2567,6 +2581,25 @@ function renderNetWorthChart() {
     fill: false,
     yAxisID: 'y'
   });
+  // Skipped entirely (rather than shown as a flat, meaningless "0-month trend") when there isn't
+  // even one full month-over-month change to compute a rate from yet.
+  if (recentWindow > 0) {
+    datasets.push({
+      label: `Projected savings (recent ${recentWindow}-month trend)`,
+      data: connectingPoint.concat(recentTrendValues),
+      type: 'line',
+      stack: 'projection-line-4',
+      borderColor: '#c3e88d',
+      backgroundColor: '#c3e88d',
+      borderWidth: 2,
+      borderDash: [1, 3],
+      pointRadius: 2,
+      tension: 0,
+      spanGaps: false,
+      fill: false,
+      yAxisID: 'y'
+    });
+  }
 
   // Crop to the selected From/To window — this only trims what's drawn, not the underlying
   // running totals, so scrolling the window never changes the trajectory itself.
