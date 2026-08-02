@@ -1337,7 +1337,24 @@ function recomputeReferenceLines(chart) {
   // Net Worth's Trend is a rolling 3-month-window fit over the totals (see slidingWindowTrend);
   // the spend chart's Trend is literally the totals themselves — an established, separate
   // convention there.
-  if (trendDs) trendDs.data = primaryStack === 'balance' ? slidingWindowTrend(totalData, 3) : totalData;
+  if (trendDs) {
+    if (primaryStack === 'balance') {
+      // Mirror renderNetWorthChart's own anchor: stop the window at the last COMPLETE month,
+      // not a trailing partial current month (real 'balance' data, but for a month still in
+      // progress) — an in-progress month reads as a false decline in a window computed from it.
+      // The boundary between real and purely-projected months is wherever every 'balance'
+      // dataset goes null (they're only null-padded for genuinely future months).
+      let lastBalanceIdx = bucketCount - 1;
+      while (lastBalanceIdx >= 0 && !chart.data.datasets.some(d => d.stack === 'balance' && d.data[lastBalanceIdx] != null)) {
+        lastBalanceIdx--;
+      }
+      if (lastBalanceIdx > 0 && chart.data.labels[lastBalanceIdx] === todayMonthLabel()) lastBalanceIdx--;
+      trendDs.data = slidingWindowTrend(totalData.slice(0, lastBalanceIdx + 1), 3)
+        .concat(totalData.slice(lastBalanceIdx + 1).map(() => null));
+    } else {
+      trendDs.data = totalData;
+    }
+  }
   if (avgDs) avgDs.data = totalData.map(() => avgValue);
 
   if (budgetDs) {
@@ -2477,12 +2494,29 @@ function renderNetWorthChart() {
     });
   });
 
+  const totalPerMonth = months.map((m, idx) => datasets.reduce((s, d) => s + (d.data[idx] || 0), 0));
+
+  // Anchor the Trend line and every projection on the last COMPLETE month, not just whatever
+  // month has the most recent data. Recurring monthly items (the ISK transfer, the mortgage
+  // rollover, the housing fee) tend to post late in the calendar month, so if the current, still-
+  // in-progress month has only been partially imported so far, it looks artificially low. Using
+  // it would understate every projection's starting point — and badly distort the recent-trend
+  // and moving-average Trend lines specifically, since both are rates/windows computed FROM this
+  // endpoint (an artificially low last month reads as a decline even when the last fully-complete
+  // months were actually growing).
+  let lastActualIdx = totalPerMonth.length - 1;
+  if (lastActualIdx > 0 && months[lastActualIdx] === todayMonthLabel()) lastActualIdx--;
+  const lastActualTotal = lastActualIdx >= 0 ? totalPerMonth[lastActualIdx] : 0;
+  const lastRealMonth = lastActualIdx >= 0 ? months[lastActualIdx] : null;
+
   // Trend: a rolling 3-month-window best-fit line over total balance across whatever's currently
   // visible via the legend (recomputeReferenceLines handles keeping it reactive to that) — the
   // recent trajectory, so a turn in the last few months shows up right away instead of being
-  // smoothed away against years of prior data.
-  const totalPerMonth = months.map((m, idx) => datasets.reduce((s, d) => s + (d.data[idx] || 0), 0));
-  const trendData = slidingWindowTrend(totalPerMonth, 3);
+  // smoothed away against years of prior data. Stops at lastActualIdx rather than running through
+  // any trailing partial month(s) — unlike the projection lines below, it has nothing useful to
+  // show there (it's an average of real data, not a forward-looking estimate), so it just ends.
+  const trendData = slidingWindowTrend(totalPerMonth.slice(0, lastActualIdx + 1), 3)
+    .concat(totalPerMonth.slice(lastActualIdx + 1).map(() => null));
   datasets.push({
     label: 'Trend (total savings)',
     data: trendData,
@@ -2569,18 +2603,6 @@ function renderNetWorthChart() {
   const totalMonthlyBudget = categoryTree
     .filter(c => c.key !== 'Excluded')
     .reduce((s, c) => s + (effectiveMonthlyBudget(c) || 0), 0);
-
-  // Anchor projections on the last COMPLETE month, not just whatever month has the most recent
-  // data. Recurring monthly items (the ISK transfer, the mortgage rollover, the housing fee) tend
-  // to post late in the calendar month, so if the current, still-in-progress month has only been
-  // partially imported so far, it looks artificially low. Using it as the anchor would understate
-  // every projection's starting point — and badly distort the recent-trend line specifically,
-  // since that line's whole slope is computed FROM this endpoint (an artificially low last month
-  // reads as a decline even when the last fully-complete months were actually growing).
-  let lastActualIdx = totalPerMonth.length - 1;
-  if (lastActualIdx > 0 && months[lastActualIdx] === todayMonthLabel()) lastActualIdx--;
-  const lastActualTotal = lastActualIdx >= 0 ? totalPerMonth[lastActualIdx] : 0;
-  const lastRealMonth = lastActualIdx >= 0 ? months[lastActualIdx] : null;
 
   // Secondary scenario: identical income assumption (regular salary through REGULAR_SALARY_CUTOFF,
   // then the same a-kassa step-down), but budget also drops by BUDGET_CUT_AFTER_CUTOFF starting
