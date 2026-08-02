@@ -2569,8 +2569,18 @@ function renderNetWorthChart() {
   const totalMonthlyBudget = categoryTree
     .filter(c => c.key !== 'Excluded')
     .reduce((s, c) => s + (effectiveMonthlyBudget(c) || 0), 0);
-  const lastActualTotal = totalPerMonth.length ? totalPerMonth[totalPerMonth.length - 1] : 0;
-  const lastRealMonth = months.length ? months[months.length - 1] : null;
+
+  // Anchor projections on the last COMPLETE month, not just whatever month has the most recent
+  // data. Recurring monthly items (the ISK transfer, the mortgage rollover, the housing fee) tend
+  // to post late in the calendar month, so if the current, still-in-progress month has only been
+  // partially imported so far, it looks artificially low. Using it as the anchor would understate
+  // every projection's starting point — and badly distort the recent-trend line specifically,
+  // since that line's whole slope is computed FROM this endpoint (an artificially low last month
+  // reads as a decline even when the last fully-complete months were actually growing).
+  let lastActualIdx = totalPerMonth.length - 1;
+  if (lastActualIdx > 0 && months[lastActualIdx] === todayMonthLabel()) lastActualIdx--;
+  const lastActualTotal = lastActualIdx >= 0 ? totalPerMonth[lastActualIdx] : 0;
+  const lastRealMonth = lastActualIdx >= 0 ? months[lastActualIdx] : null;
 
   // Secondary scenario: identical income assumption (regular salary through REGULAR_SALARY_CUTOFF,
   // then the same a-kassa step-down), but budget also drops by BUDGET_CUT_AFTER_CUTOFF starting
@@ -2594,17 +2604,24 @@ function renderNetWorthChart() {
   // much history yet, down to 2 months; flat if there's only 1), held constant going forward.
   // A data-driven "if recent months just keep happening" read, distinct from the three
   // budget/income scenarios above which are all built on hypothetical assumptions.
-  const recentWindow = Math.min(3, totalPerMonth.length - 1);
+  const recentWindow = Math.min(3, lastActualIdx);
   const recentMonthlyDelta = recentWindow > 0
-    ? (totalPerMonth[totalPerMonth.length - 1] - totalPerMonth[totalPerMonth.length - 1 - recentWindow]) / recentWindow
+    ? (totalPerMonth[lastActualIdx] - totalPerMonth[lastActualIdx - recentWindow]) / recentWindow
     : 0;
 
+  // Genuinely NEW future months, beyond the real `months` display array.
   const projectedMonths = [];
   const projectedValues = [];
   const reducedBudgetValues = [];
   const reducedBudgetValues2 = [];
   const recentTrendValues = [];
+  // The projection still needs to run through any partial/in-progress month(s) already present
+  // in `months` after the anchor (e.g. the current calendar month with only a few days imported
+  // so far) — those get a projected overlay value at their existing position instead of a new
+  // label, keyed here by month before being folded into the display arrays below.
+  const overlapValues = {};
   if (lastRealMonth && monthSortKey(netWorthRangeFilter.to) > monthSortKey(lastRealMonth)) {
+    const lastDisplayedMonth = months.length ? months[months.length - 1] : null;
     let cursor = lastRealMonth;
     let running = lastActualTotal;
     let runningReducedBudget = lastActualTotal;
@@ -2622,18 +2639,34 @@ function renderNetWorthChart() {
       runningReducedBudget += income - (afterCutoff ? totalMonthlyBudget - BUDGET_CUT_AFTER_CUTOFF : totalMonthlyBudget);
       runningReducedBudget2 += income - budgetForThird;
       runningRecentTrend += recentMonthlyDelta;
-      projectedMonths.push(cursor);
-      projectedValues.push(running);
-      reducedBudgetValues.push(runningReducedBudget);
-      reducedBudgetValues2.push(runningReducedBudget2);
-      recentTrendValues.push(runningRecentTrend);
+      if (lastDisplayedMonth && monthSortKey(cursor) <= monthSortKey(lastDisplayedMonth)) {
+        overlapValues[cursor] = {
+          primary: running,
+          reducedBudget: runningReducedBudget,
+          reducedBudget2: runningReducedBudget2,
+          recentTrend: runningRecentTrend
+        };
+      } else {
+        projectedMonths.push(cursor);
+        projectedValues.push(running);
+        reducedBudgetValues.push(runningReducedBudget);
+        reducedBudgetValues2.push(runningReducedBudget2);
+        recentTrendValues.push(runningRecentTrend);
+      }
     }
   }
 
   // Every existing dataset needs null padding for the new future months so Chart.js doesn't
   // misalign them against the extended labels array.
   datasets.forEach(d => { d.data = d.data.concat(projectedMonths.map(() => null)); });
-  const connectingPoint = months.map((_, idx) => idx === months.length - 1 ? lastActualTotal : null);
+  // Builds the months.length-long prefix for a projection series: the anchor's own value at
+  // lastActualIdx, any partial-month overlay values after it, null everywhere else.
+  const buildPrefix = key => months.map((m, idx) => {
+    if (idx === lastActualIdx) return lastActualTotal;
+    if (idx > lastActualIdx && overlapValues[m]) return overlapValues[m][key];
+    return null;
+  });
+  const connectingPoint = buildPrefix('primary');
   datasets.push({
     label: 'Projected savings (salary, then a-kassa step-down)',
     data: connectingPoint.concat(projectedValues),
@@ -2651,7 +2684,7 @@ function renderNetWorthChart() {
   });
   datasets.push({
     label: `Projected savings (budget −7,000 kr/mo after ${REGULAR_SALARY_CUTOFF})`,
-    data: connectingPoint.concat(reducedBudgetValues),
+    data: buildPrefix('reducedBudget').concat(reducedBudgetValues),
     type: 'line',
     stack: 'projection-line-2',
     borderColor: '#ffb454',
@@ -2666,7 +2699,7 @@ function renderNetWorthChart() {
   });
   datasets.push({
     label: `Projected savings (budget −7,000 from ${REGULAR_SALARY_CUTOFF}, additional −9,000 from ${BUDGET_CUT_2_CUTOFF})`,
-    data: connectingPoint.concat(reducedBudgetValues2),
+    data: buildPrefix('reducedBudget2').concat(reducedBudgetValues2),
     type: 'line',
     stack: 'projection-line-3',
     borderColor: '#82e0f9',
@@ -2684,7 +2717,7 @@ function renderNetWorthChart() {
   if (recentWindow > 0) {
     datasets.push({
       label: `Projected savings (recent ${recentWindow}-month trend)`,
-      data: connectingPoint.concat(recentTrendValues),
+      data: buildPrefix('recentTrend').concat(recentTrendValues),
       type: 'line',
       stack: 'projection-line-4',
       borderColor: '#c3e88d',
