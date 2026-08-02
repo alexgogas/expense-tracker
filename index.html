@@ -733,6 +733,7 @@ async function loadAllData() {
 
     const syntheticLoanCount = removeSyntheticLoanEntries();
     const mortgageMigration = migrateMortgageSubcategories();
+    const housingFeeMigration = mergeHousingAssociationFeeMerchant();
 
     setStatus(`Loaded ${dataset.length} transactions.`);
     renderOverview();
@@ -761,6 +762,24 @@ async function loadAllData() {
           `Interest/Amortization subcategories onto the new combined "Amortization/interest" one. `
         : 'Updated the Housing/Mortgage category tree (added the "Avgift" subcategory). ';
       showToast(txnNote + 'Click "Save to Drive" to make this permanent.', 'success');
+    }
+    if (housingFeeMigration.renamedCount || housingFeeMigration.removedDuplicateCount ||
+        housingFeeMigration.overrideFixed || housingFeeMigration.recategorizedCount) {
+      markUnsaved();
+      const parts = [];
+      if (housingFeeMigration.renamedCount) {
+        parts.push(`renamed ${housingFeeMigration.renamedCount} old-style housing-association-fee transaction${housingFeeMigration.renamedCount === 1 ? '' : 's'}`);
+      }
+      if (housingFeeMigration.removedDuplicateCount) {
+        parts.push(`removed ${housingFeeMigration.removedDuplicateCount} duplicate${housingFeeMigration.removedDuplicateCount === 1 ? '' : 's'} that resulted`);
+      }
+      if (housingFeeMigration.recategorizedCount) {
+        parts.push(`fixed the category on ${housingFeeMigration.recategorizedCount} transaction${housingFeeMigration.recategorizedCount === 1 ? '' : 's'} miscategorized as Excluded`);
+      }
+      if (housingFeeMigration.overrideFixed) {
+        parts.push('fixed a standing override that was excluding it going forward');
+      }
+      showToast(`Housing association fee cleanup: ${parts.join(', ')}. Click "Save to Drive" to make this permanent.`, 'success');
     }
   } catch (err) {
     setStatus('');
@@ -1897,6 +1916,85 @@ function removeSyntheticLoanEntries() {
   const before = dataset.length;
   dataset = dataset.filter(t => t.card !== 'Loan');
   return before - dataset.length;
+}
+
+// One-time cleanup: parsePersonkontoRows didn't always normalize the housing-association-fee
+// merchant name to "Housing association fee (BG 469-8593)" — older imports (before that rule
+// existed) saved it under the raw Rubrik text instead. Since transactionKey() includes merchant,
+// re-importing a month that was already saved under the old raw name doesn't get recognized as
+// "already exists" once the merchant name changes — it silently creates a second row for the same
+// real payment. Renames every old variant to the current name, then removes exact date+amount+
+// card duplicates that result, preferring to keep whichever copy is already correctly categorized
+// as Housing/Mortgage > Avgift over an accidentally-miscategorized one. Also straightens out a
+// standing override that was pointing the new merchant name at Excluded instead. Runs on every
+// load; a no-op once nothing's left on the old names.
+function mergeHousingAssociationFeeMerchant() {
+  const NEW_MERCHANT = 'Housing association fee (BG 469-8593)';
+  const OLD_MERCHANTS = ['Open Banking BG 469-8593 Brf Rovfåg', 'Betalning BG 469-8593 Brf Rovfågeln'];
+  let renamedCount = 0;
+  let removedDuplicateCount = 0;
+  let overrideFixed = false;
+
+  dataset.forEach(t => {
+    if (OLD_MERCHANTS.includes(t.merchant)) {
+      t.merchant = NEW_MERCHANT;
+      renamedCount++;
+    }
+  });
+  OLD_MERCHANTS.forEach(old => {
+    if (overrides[old] !== undefined) {
+      if (overrides[NEW_MERCHANT] === undefined) overrides[NEW_MERCHANT] = overrides[old];
+      delete overrides[old];
+    }
+    if (learnedLookup[old] !== undefined) {
+      if (learnedLookup[NEW_MERCHANT] === undefined) learnedLookup[NEW_MERCHANT] = learnedLookup[old];
+      delete learnedLookup[old];
+    }
+  });
+
+  const seen = new Map(); // "date|amount|card" -> the transaction kept for that slot so far
+  const toRemove = new Set();
+  dataset.forEach(t => {
+    if (t.merchant !== NEW_MERCHANT) return;
+    const key = [t.txn_date, t.amount.toFixed(2), t.card].join('|');
+    const existing = seen.get(key);
+    if (!existing) {
+      seen.set(key, t);
+      return;
+    }
+    // Prefer whichever copy is already correctly categorized, regardless of which was seen first.
+    const currentIsCorrect = t.category === 'Housing/Mortgage > Avgift';
+    const existingIsCorrect = existing.category === 'Housing/Mortgage > Avgift';
+    if (currentIsCorrect && !existingIsCorrect) {
+      toRemove.add(existing.id);
+      seen.set(key, t);
+    } else {
+      toRemove.add(t.id);
+    }
+  });
+  if (toRemove.size) {
+    dataset = dataset.filter(t => !toRemove.has(t.id));
+    removedDuplicateCount = toRemove.size;
+  }
+
+  if (overrides[NEW_MERCHANT] === 'Excluded') {
+    overrides[NEW_MERCHANT] = 'Housing/Mortgage > Avgift';
+    overrideFixed = true;
+  }
+
+  // Fixing the override only affects future imports — it doesn't retroactively touch already-
+  // saved rows. Any surviving entry for this merchant still miscategorized as Excluded (e.g. a
+  // month that never had an old-style duplicate to prefer during the dedup pass above) needs
+  // fixing directly.
+  let recategorizedCount = 0;
+  dataset.forEach(t => {
+    if (t.merchant === NEW_MERCHANT && t.category === 'Excluded') {
+      t.category = 'Housing/Mortgage > Avgift';
+      recategorizedCount++;
+    }
+  });
+
+  return { renamedCount, removedDuplicateCount, overrideFixed, recategorizedCount };
 }
 
 function addCategory() {
