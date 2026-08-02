@@ -2985,19 +2985,35 @@ async function saveImport() {
   }).concat(merged);
   const nextOverrides = newOverrides;
 
+  // The dataset write is the point of no return: once it succeeds, the transactions are safely
+  // on Drive with the categories the user picked already baked in (row.category was mutated
+  // directly above, independent of overrides.json — overrides only affect FUTURE auto-
+  // categorization of the same merchant). Local state and pendingImport get committed right after
+  // that write, before anything else is attempted. Previously this only happened after BOTH the
+  // dataset AND overrides writes succeeded, so if the dataset write succeeded but the overrides
+  // write then failed, local `dataset` silently stayed stale (not matching what Drive actually
+  // had) and pendingImport stuck around — re-parsing the same file against a dataset that didn't
+  // yet include these rows, which on a successful retry would write the same transactions to
+  // Drive a second time.
+  const balanceUpdates = pendingImport.balanceUpdates; // captured before pendingImport is cleared below
+  let transactionsSaved = false;
   try {
     await updateFileContent(fileIds['canonical_dataset.json'], JSON.stringify(nextDataset));
-    await updateFileContent(fileIds['canonical_overrides.json'], JSON.stringify(nextOverrides, null, 2));
+    transactionsSaved = true;
     dataset = nextDataset;
+    pendingImport = null;
+    document.getElementById('import-results').innerHTML = '';
+
+    await updateFileContent(fileIds['canonical_overrides.json'], JSON.stringify(nextOverrides, null, 2));
     overrides = nextOverrides;
 
     // Sparkonto's Saldo-derived balances (see handleFile) — best-effort: the transactions above
     // are already safely saved, so a failure here just means the Net Worth chart's Sparkonto bar
     // won't reflect this import yet, not a lost import.
-    if (pendingImport.balanceUpdates) {
-      Object.keys(pendingImport.balanceUpdates).forEach(m => {
+    if (balanceUpdates) {
+      Object.keys(balanceUpdates).forEach(m => {
         if (!accountBalances[m]) accountBalances[m] = {};
-        accountBalances[m][NET_WORTH_ACCOUNT] = pendingImport.balanceUpdates[m];
+        accountBalances[m][NET_WORTH_ACCOUNT] = balanceUpdates[m];
       });
       try {
         if (fileIds['account_balances.json']) {
@@ -3013,8 +3029,6 @@ async function saveImport() {
     const upgradeNote = upgrades.length ? ` Backfilled pot-tracking data onto ${upgrades.length} existing transaction${upgrades.length === 1 ? '' : 's'}.` : '';
     setStatus(`Saved. ${merged.length} transactions added.${upgradeNote}`);
     showToast(`Saved ${merged.length} transactions to Drive.${upgradeNote}`, 'success');
-    pendingImport = null;
-    document.getElementById('import-results').innerHTML = '';
     renderOverview();
   } catch (err) {
     setStatus('');
@@ -3024,7 +3038,17 @@ async function saveImport() {
     } else if (err.message && err.message.includes('401')) {
       hint = ' Your session may have expired — try signing in again.';
     }
-    showToast('Save failed: ' + err.message + hint, 'error');
+    if (transactionsSaved) {
+      renderOverview();
+      showToast(
+        `Saved ${merged.length} transactions to Drive, but saving the merchant category override failed: ` +
+        `${err.message}.${hint} The categories you picked are still applied to these transactions — only ` +
+        `future imports of the same merchant will need recategorizing.`,
+        'error'
+      );
+    } else {
+      showToast('Save failed: ' + err.message + hint, 'error');
+    }
     console.error(err);
   }
 }
