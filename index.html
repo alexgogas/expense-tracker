@@ -165,6 +165,10 @@
     width: 80px; background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
     border-radius: 6px; padding: 4px 8px; font-size: 13px; text-align: right;
   }
+  .budget-period-select {
+    background: var(--panel-2); color: var(--text-dim); border: 1px solid var(--border);
+    border-radius: 6px; padding: 4px 6px; font-size: 12px;
+  }
 
   .balance-grid-table { border-collapse: collapse; font-size: 13px; white-space: nowrap; }
   .balance-grid-table th, .balance-grid-table td { padding: 6px 10px; border-bottom: 1px solid var(--border); text-align: right; }
@@ -270,9 +274,11 @@
     <details class="card">
       <summary><h2>Budgets</h2></summary>
       <p style="color: var(--text-dim); font-size: 13px; margin: 0 0 14px;">
-        Set a monthly budget per category or subcategory. A category with no budget of its own
-        shows the sum of its subcategories' budgets instead. Actual spend is scaled to the
-        selected date range above (monthly budget &times; months in range).
+        Set a budget per category or subcategory, as either kr/mo or kr/yr &mdash; use kr/yr for
+        lumpy, non-recurring spend (travel, one-off shopping) where a monthly figure doesn't make
+        sense. A category with no budget of its own shows the sum of its subcategories' budgets
+        instead. Actual spend is scaled to the selected date range above (budget prorated to
+        months in range &mdash; a kr/yr budget is divided by 12 first).
       </p>
       <div class="stat-row" id="budget-total-row" style="margin-bottom: 16px;"></div>
       <div id="budget-tree-wrap"></div>
@@ -398,7 +404,8 @@ let aliases = {};
 let overrides = {};
 let learnedLookup = {};
 let categoryTree = []; // live, user-editable taxonomy — see loadAllData() and the Categories card
-let budgets = {}; // categoryPath ("Top" or "Top > Sub") -> monthly budget amount — see the Budgets card
+let budgets = {}; // categoryPath ("Top" or "Top > Sub") -> monthly budget amount (always monthly-equivalent, even for "year"-period paths below) — see the Budgets card
+let budgetPeriods = {}; // categoryPath -> 'year' for budgets entered/displayed as an annual figure (lumpy, non-recurring spend like travel); absent/'month' is the default
 const NET_WORTH_ACCOUNT = 'Sparkonto'; // the only balance-tracked account — populated automatically
   // from the Saldo column of each Sparkonto CSV import (see handleFile/saveImport), not user-editable
 let accountBalances = {}; // { month ("Mon-YY"): { [NET_WORTH_ACCOUNT]: balance } } — same month format as everything else
@@ -744,6 +751,17 @@ async function loadAllData() {
         await createFileInFolder('budgets.json', JSON.stringify(budgets, null, 2));
       } catch (e) {
         console.error('Could not create budgets.json yet — will retry on next save.', e);
+      }
+    }
+
+    if (fileIds['budget_periods.json']) {
+      budgetPeriods = JSON.parse(await downloadFile(fileIds['budget_periods.json']));
+    } else {
+      budgetPeriods = {};
+      try {
+        await createFileInFolder('budget_periods.json', JSON.stringify(budgetPeriods, null, 2));
+      } catch (e) {
+        console.error('Could not create budget_periods.json yet — will retry on next save.', e);
       }
     }
 
@@ -1827,6 +1845,11 @@ async function saveAllChanges() {
     } else {
       await createFileInFolder('budgets.json', JSON.stringify(budgets, null, 2));
     }
+    if (fileIds['budget_periods.json']) {
+      await updateFileContent(fileIds['budget_periods.json'], JSON.stringify(budgetPeriods, null, 2));
+    } else {
+      await createFileInFolder('budget_periods.json', JSON.stringify(budgetPeriods, null, 2));
+    }
     if (fileIds['account_balances.json']) {
       await updateFileContent(fileIds['account_balances.json'], JSON.stringify(accountBalances, null, 2));
     } else {
@@ -1861,11 +1884,17 @@ function migrateCategoryReferences(oldCat, newCat, prefixMatch) {
   dataset.forEach(t => { if (matches(t.category)) t.category = replace(t.category); });
   Object.keys(overrides).forEach(m => { if (matches(overrides[m])) overrides[m] = replace(overrides[m]); });
   Object.keys(learnedLookup).forEach(m => { if (matches(learnedLookup[m])) learnedLookup[m] = replace(learnedLookup[m]); });
-  // budgets is keyed BY category path (not a value holding one), so migrate the keys themselves.
+  // budgets (and its parallel budgetPeriods map) are keyed BY category path (not a value holding
+  // one), so migrate the keys themselves.
   Object.keys(budgets).forEach(k => {
     if (!matches(k)) return;
     const newKey = replace(k);
     if (newKey !== k) { budgets[newKey] = budgets[k]; delete budgets[k]; }
+  });
+  Object.keys(budgetPeriods).forEach(k => {
+    if (!matches(k)) return;
+    const newKey = replace(k);
+    if (newKey !== k) { budgetPeriods[newKey] = budgetPeriods[k]; delete budgetPeriods[k]; }
   });
 }
 
@@ -2108,7 +2137,9 @@ function deleteCategory(key) {
   if (!confirm(`Delete category "${key}"?`)) return;
   categoryTree = categoryTree.filter(c => c.key !== key);
   delete budgets[key];
+  delete budgetPeriods[key];
   Object.keys(budgets).forEach(k => { if (k.startsWith(key + ' > ')) delete budgets[k]; });
+  Object.keys(budgetPeriods).forEach(k => { if (k.startsWith(key + ' > ')) delete budgetPeriods[k]; });
   markUnsaved();
   renderCategoriesUI();
   renderBudgetsUI();
@@ -2125,6 +2156,7 @@ function deleteSubcategory(topKey, sub) {
   entry.subs = entry.subs.filter(s => s !== sub);
   if (!entry.subs.length) entry.subs = null;
   delete budgets[topKey + ' > ' + sub];
+  delete budgetPeriods[topKey + ' > ' + sub];
   markUnsaved();
   renderCategoriesUI();
   renderBudgetsUI();
@@ -2173,6 +2205,7 @@ function mergeSubcategory(topKey, sourceSub) {
   entry.subs = entry.subs.filter(s => s !== sourceSub);
   if (!entry.subs.length) entry.subs = null;
   delete budgets[sourcePath];
+  delete budgetPeriods[sourcePath];
   markUnsaved();
   renderCategoriesUI();
   renderBudgetsUI();
@@ -2275,13 +2308,25 @@ function budgetColorForPct(pct) {
   return '#ff6b6b';
 }
 
-function setBudget(path, rawValue) {
+// rawValue is in whatever unit `period` denotes ('year' or 'month'); budgets[path] always stores
+// the monthly-equivalent so every other consumer (chart Budget line, groupMeta %, AI insights)
+// can keep treating it as a plain monthly figure without knowing about periods at all.
+function setBudget(path, rawValue, period) {
   const amount = parseFloat(rawValue);
   if (!rawValue || isNaN(amount) || amount <= 0) delete budgets[path];
-  else budgets[path] = amount;
+  else budgets[path] = period === 'year' ? amount / 12 : amount;
   markUnsaved();
   renderBudgetsUI();
   renderSpendChart(); // so the chart's Budget line reflects the edit immediately, not just on the next unrelated re-render
+}
+
+// Toggling the unit alone doesn't change the stored monthly-equivalent amount — only how it's
+// displayed/entered — so no conversion happens here, just the period flag.
+function setBudgetPeriod(path, period) {
+  if (period === 'year') budgetPeriods[path] = 'year';
+  else delete budgetPeriods[path];
+  markUnsaved();
+  renderBudgetsUI();
 }
 
 function budgetRowRight(path, explicitMonthlyBudget, actual, effectiveRangeBudget, isRolledUp) {
@@ -2319,14 +2364,23 @@ function budgetRowRight(path, explicitMonthlyBudget, actual, effectiveRangeBudge
     right.appendChild(noBudget);
   }
 
+  const period = budgetPeriods[path] || 'month';
+
   const input = document.createElement('input');
   input.type = 'number';
   input.min = '0';
   input.className = 'budget-input';
-  input.placeholder = 'kr/mo';
-  input.value = explicitMonthlyBudget || '';
-  input.addEventListener('change', () => setBudget(path, input.value));
+  input.placeholder = 'amount';
+  input.value = explicitMonthlyBudget ? Math.round(period === 'year' ? explicitMonthlyBudget * 12 : explicitMonthlyBudget) : '';
+  input.addEventListener('change', () => setBudget(path, input.value, period));
   right.appendChild(input);
+
+  const periodSelect = document.createElement('select');
+  periodSelect.className = 'budget-period-select';
+  periodSelect.innerHTML = '<option value="month">kr/mo</option><option value="year">kr/yr</option>';
+  periodSelect.value = period;
+  periodSelect.addEventListener('change', () => setBudgetPeriod(path, periodSelect.value));
+  right.appendChild(periodSelect);
 
   return right;
 }
@@ -2422,12 +2476,16 @@ function buildInsightsSummary(includeMerchantDetail) {
   lines.push('');
 
   const monthCount = Math.max(months.length, 1);
-  lines.push('## Monthly budget vs actual spend (selected date range above, kr/month)');
+  lines.push('## Monthly budget vs actual spend (selected date range above, kr/month unless noted otherwise)');
   categoryTree.forEach(entry => {
     if (entry.key === 'Excluded') return;
     const monthlyBudget = effectiveMonthlyBudget(entry);
     const avgActual = actualSpendForPath(entry.key, true) / monthCount;
-    lines.push(`- ${entry.key}: budget ${monthlyBudget ? Math.round(monthlyBudget) : 'none set'}, actual ~${Math.round(avgActual)}`);
+    const isAnnual = budgetPeriods[entry.key] === 'year';
+    const budgetTxt = monthlyBudget
+      ? (isAnnual ? `${Math.round(monthlyBudget * 12)} kr/year (non-recurring/lumpy spend, budgeted annually rather than monthly)` : `${Math.round(monthlyBudget)} kr/month`)
+      : 'none set';
+    lines.push(`- ${entry.key}: budget ${budgetTxt}, actual ~${Math.round(avgActual)} kr/month over the selected range`);
   });
 
   if (netWorthChartInstance) {
