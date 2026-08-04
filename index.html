@@ -310,6 +310,26 @@
     </details>
 
     <details class="card">
+      <summary><h2>AI Insights</h2></summary>
+      <p style="color: var(--text-dim); font-size: 13px; margin: 0 0 14px;">
+        Generates natural-language insights from the same category totals, budgets, and net worth
+        figures driving the charts above, using your own Anthropic API key — called directly from
+        your browser, nothing passes through any server of ours. The key is cached in this
+        browser's local storage, the same way the Drive folder id already is.
+      </p>
+      <div class="format-row">
+        <input type="password" id="anthropic-api-key" class="cat-select" placeholder="Anthropic API key (sk-ant-…)" style="flex: 1 1 260px;">
+      </div>
+      <label style="display:flex; align-items:center; gap:8px; margin: 10px 0; font-size: 13px; color: var(--text-dim);">
+        <input type="checkbox" id="insights-include-merchants">
+        Include individual transaction detail (merchant names/amounts) for richer insights
+      </label>
+      <button id="generate-insights-btn" class="btn-sm">Generate insights</button>
+      <div id="insights-status" style="margin-top: 10px; font-size: 13px; color: var(--text-dim);"></div>
+      <div id="insights-result" style="margin-top: 10px; white-space: pre-wrap; font-size: 14px; line-height: 1.5;"></div>
+    </details>
+
+    <details class="card">
       <summary><h2>Categories</h2></summary>
       <p style="color: var(--text-dim); font-size: 13px; margin: 0 0 14px;">
         Renaming a category or subcategory updates every transaction using it. A category or
@@ -356,6 +376,7 @@ const API_KEY = 'AIzaSyC6c4cHh7sdor57Eqn22bmMy2_6RVyWTvs'; // Restricted to Goog
 const DRIVE_FOLDER_NAME = 'Expense Tracker App'; // shown as a hint in the picker dialog title only
 const SCOPES = 'https://www.googleapis.com/auth/drive.file';
 const FOLDER_STORAGE_KEY = 'expense_tracker_folder_id';
+const ANTHROPIC_API_KEY_STORAGE_KEY = 'expense_tracker_anthropic_api_key';
 // The 4 files the folder must contain. Picking the *folder* in the Picker only grants drive.file
 // read access to its contents — writing to these pre-existing files needs each one individually
 // authorized via its own Picker selection (see openFileAccessPicker).
@@ -439,6 +460,7 @@ window.onload = () => {
   });
   document.getElementById('save-changes-btn').addEventListener('click', saveAllChanges);
   document.getElementById('add-category-btn').addEventListener('click', addCategory);
+  setupInsightsUI();
 
   setupImportUI();
   // Deliberately no automatic/silent requestAccessToken() call here. Google Identity Services
@@ -2368,6 +2390,120 @@ function renderBudgetsUI() {
     el.innerHTML = `<div class="label">${s.label}</div><div class="value">${s.value}</div>`;
     totalRow.appendChild(el);
   });
+}
+
+// ============================================================
+// AI INSIGHTS
+// ============================================================
+// Builds a plain-text summary for the LLM prompt, reusing already-computed state rather than
+// re-deriving anything: the Budgets card's own helpers for budget vs actual, and the Net
+// Worth/Savings charts' OWN already-rendered dataset arrays (chartInstance.data) for trajectory
+// and savings-rate figures. If those charts haven't rendered yet for some reason, their section
+// is just skipped rather than recomputed from scratch.
+function buildInsightsSummary(includeMerchantDetail) {
+  const lines = [];
+  const monthCount = Math.max(visibleMonths().length, 1);
+
+  lines.push('## Monthly budget vs actual spend (current date range, kr/month)');
+  categoryTree.forEach(entry => {
+    if (entry.key === 'Excluded') return;
+    const monthlyBudget = effectiveMonthlyBudget(entry);
+    const avgActual = actualSpendForPath(entry.key, true) / monthCount;
+    lines.push(`- ${entry.key}: budget ${monthlyBudget ? Math.round(monthlyBudget) : 'none set'}, actual ~${Math.round(avgActual)}`);
+  });
+
+  if (netWorthChartInstance) {
+    lines.push('', '## Net worth (Sparkonto + ISK + external savings + fixed-term deposit), by month, kr — includes both real history and the current projection scenarios');
+    const nwLabels = netWorthChartInstance.data.labels;
+    netWorthChartInstance.data.datasets.forEach(ds => {
+      const points = nwLabels.map((m, i) => (ds.data[i] != null ? `${m}: ${Math.round(ds.data[i])}` : null)).filter(Boolean);
+      if (points.length) lines.push(`${ds.label} — ${points.join(', ')}`);
+    });
+  }
+
+  if (savingsChartInstance) {
+    const savingsDs = savingsChartInstance.data.datasets.find(d => d.label === 'Savings (salary − spend)');
+    if (savingsDs) {
+      lines.push('', '## Monthly savings (salary minus spend), kr');
+      const sLabels = savingsChartInstance.data.labels;
+      const points = sLabels.map((m, i) => (savingsDs.data[i] != null ? `${m}: ${Math.round(savingsDs.data[i])}` : null)).filter(Boolean);
+      lines.push(points.join(', '));
+    }
+  }
+
+  if (includeMerchantDetail) {
+    // Capped to the last 3 months to bound token cost — plenty for "what's changed recently"
+    // without shipping years of individual transactions.
+    const recentMonths = new Set(sortedMonthList().slice(-3));
+    const rows = dataset
+      .filter(t => recentMonths.has(t.month) && t.category !== 'Excluded')
+      .sort((a, b) => b.amount - a.amount)
+      .slice(0, 150);
+    lines.push('', '## Individual transactions, last 3 months, largest first (date | merchant | amount kr | category)');
+    rows.forEach(t => lines.push(`${t.txn_date} | ${t.merchant} | ${Math.round(t.amount)} | ${t.category}`));
+  }
+
+  return lines.join('\n');
+}
+
+async function generateInsights() {
+  const apiKeyInput = document.getElementById('anthropic-api-key');
+  const apiKey = apiKeyInput.value.trim() || localStorage.getItem(ANTHROPIC_API_KEY_STORAGE_KEY) || '';
+  if (!apiKey) {
+    showToast('Enter your Anthropic API key first.', 'error');
+    return;
+  }
+  localStorage.setItem(ANTHROPIC_API_KEY_STORAGE_KEY, apiKey);
+
+  const includeMerchantDetail = document.getElementById('insights-include-merchants').checked;
+  const summary = buildInsightsSummary(includeMerchantDetail);
+  const statusEl = document.getElementById('insights-status');
+  const resultEl = document.getElementById('insights-result');
+  statusEl.textContent = 'Asking Claude…';
+  resultEl.textContent = '';
+
+  try {
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+        // Documented opt-in for calling the API directly from browser JS — the "bring your own
+        // key" pattern this feature relies on instead of standing up a server-side proxy.
+        'anthropic-dangerous-direct-browser-access': 'true'
+      },
+      body: JSON.stringify({
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 1024,
+        messages: [{
+          role: 'user',
+          content: 'You\'re a personal finance assistant. Based on this summarized financial ' +
+            'data (amounts in SEK), give 3-5 concise, specific insights about spending trends, ' +
+            'budget adherence, and savings/net worth trajectory. Be direct and specific with ' +
+            'numbers, not generic advice.\n\n' + summary
+        }]
+      })
+    });
+    if (!res.ok) {
+      const errBody = await res.text();
+      throw new Error(`${res.status} ${errBody}`);
+    }
+    const data = await res.json();
+    const text = (data.content || []).map(b => b.text || '').join('\n').trim();
+    statusEl.textContent = '';
+    resultEl.textContent = text || 'No response text returned.';
+  } catch (err) {
+    statusEl.textContent = '';
+    showToast('Insights request failed: ' + err.message, 'error');
+    console.error(err);
+  }
+}
+
+function setupInsightsUI() {
+  const stored = localStorage.getItem(ANTHROPIC_API_KEY_STORAGE_KEY);
+  if (stored) document.getElementById('anthropic-api-key').value = stored;
+  document.getElementById('generate-insights-btn').addEventListener('click', generateInsights);
 }
 
 // ============================================================
