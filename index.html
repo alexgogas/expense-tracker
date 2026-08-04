@@ -260,6 +260,7 @@
     <details class="card">
       <summary><h2>Transactions</h2></summary>
       <div class="format-row">
+        <input type="text" id="txn-search-filter" class="cat-select" placeholder="Search merchant… (across all categories)">
         <select id="txn-category-filter" class="cat-select"><option value="">All categories</option></select>
         <select id="txn-card-filter" class="cat-select"><option value="">All cards</option></select>
       </div>
@@ -1571,6 +1572,7 @@ function renderSavingsChart() {
 function renderTransactionsBrowser() {
   const catSel = document.getElementById('txn-category-filter');
   const cardSel = document.getElementById('txn-card-filter');
+  const searchInput = document.getElementById('txn-search-filter');
 
   const topCategories = [...new Set(dataset.map(i => i.category.split(' > ')[0]))].sort();
   catSel.innerHTML = '<option value="">All categories</option>' + topCategories.map(c => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join('');
@@ -1580,16 +1582,23 @@ function renderTransactionsBrowser() {
 
   catSel.onchange = drawTransactionsTable;
   cardSel.onchange = drawTransactionsTable;
+  searchInput.oninput = drawTransactionsTable;
   drawTransactionsTable();
 }
 
 function drawTransactionsTable() {
   const cat = document.getElementById('txn-category-filter').value;
   const card = document.getElementById('txn-card-filter').value;
+  const search = document.getElementById('txn-search-filter').value.trim().toLowerCase();
 
   let rows = rangeFilteredDataset();
   if (cat) rows = rows.filter(i => i.category.split(' > ')[0] === cat);
   if (card) rows = rows.filter(i => i.card === card);
+  // Deliberately matched against the FULL dataset regardless of category — a merchant can (and,
+  // per real experience, sometimes does) end up scattered across more than one category over
+  // time, and the point of this search is to surface all of them at once, not just within
+  // whatever category happens to be selected above.
+  if (search) rows = rows.filter(i => i.merchant.toLowerCase().includes(search));
 
   const wrap = document.getElementById('txn-table-wrap');
 
@@ -1597,10 +1606,15 @@ function drawTransactionsTable() {
   // (recategorizing a transaction, changing a filter, etc.), and a freshly-created <details> is
   // always closed — so without this, whatever the user had expanded would silently collapse on
   // every single edit. Capture what's open now (keyed by category path) and restore it below.
-  const openKeys = new Set();
+  const capturedOpenKeys = new Set();
   wrap.querySelectorAll('details.cat-group[open]').forEach(d => {
-    if (d.dataset.groupKey) openKeys.add(d.dataset.groupKey);
+    if (d.dataset.groupKey) capturedOpenKeys.add(d.dataset.groupKey);
   });
+  // While actively searching, auto-expand every group instead of just restoring what was already
+  // open — matches are usually a small, focused set scattered across several categories (that's
+  // the whole point of searching across categories), so they should all be immediately visible
+  // rather than requiring a click per group.
+  const openKeys = search ? { has: () => true } : capturedOpenKeys;
 
   wrap.innerHTML = '';
   if (!rows.length) {
