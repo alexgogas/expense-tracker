@@ -127,6 +127,20 @@
     padding: 4px 8px;
     font-size: 13px;
   }
+  #notes-textarea {
+    width: 100%;
+    min-height: 160px;
+    resize: vertical;
+    background: var(--panel-2);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 10px 12px;
+    font-size: 14px;
+    font-family: inherit;
+    line-height: 1.5;
+    box-sizing: border-box;
+  }
   .badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; }
   .badge.new { background: rgba(255,180,84,0.15); color: var(--warn); }
   .badge.matched { background: rgba(126,232,184,0.15); color: var(--accent-2); }
@@ -259,6 +273,15 @@
       </div>
       <div id="chart-wrap"><canvas id="spend-chart"></canvas></div>
       <div id="merchant-summary-wrap"></div>
+    </details>
+
+    <details class="card">
+      <summary><h2>Notes</h2></summary>
+      <p style="color: var(--text-dim); font-size: 13px; margin: 0 0 14px;">
+        Free-form notes, synced to the same Drive folder as everything else &mdash; jot down
+        anything about your finances here and it'll be there next time you sign in, on any device.
+      </p>
+      <textarea id="notes-textarea" placeholder="e.g. planned upcoming expenses, reminders, context for a budget decision…"></textarea>
     </details>
 
     <details class="card">
@@ -409,6 +432,7 @@ let budgetPeriods = {}; // categoryPath -> 'year' for budgets entered/displayed 
 const NET_WORTH_ACCOUNT = 'Sparkonto'; // the only balance-tracked account — populated automatically
   // from the Saldo column of each Sparkonto CSV import (see handleFile/saveImport), not user-editable
 let accountBalances = {}; // { month ("Mon-YY"): { [NET_WORTH_ACCOUNT]: balance } } — same month format as everything else
+let notes = ''; // free-form text from the Notes card, synced to notes.json — see setupNotesUI()
 let chartInstance = null;
 let selectedFormat = 'eurobonus';
 let pendingImport = null; // { results, unmatched, format }
@@ -472,6 +496,10 @@ window.onload = () => {
   document.getElementById('save-changes-btn').addEventListener('click', saveAllChanges);
   document.getElementById('add-category-btn').addEventListener('click', addCategory);
   setupInsightsUI();
+  document.getElementById('notes-textarea').addEventListener('input', (e) => {
+    notes = e.target.value;
+    markUnsaved();
+  });
 
   setupImportUI();
   // Deliberately no automatic/silent requestAccessToken() call here. Google Identity Services
@@ -775,6 +803,18 @@ async function loadAllData() {
         console.error('Could not create account_balances.json yet — will retry on next save.', e);
       }
     }
+
+    if (fileIds['notes.json']) {
+      notes = JSON.parse(await downloadFile(fileIds['notes.json']));
+    } else {
+      notes = '';
+      try {
+        await createFileInFolder('notes.json', JSON.stringify(notes));
+      } catch (e) {
+        console.error('Could not create notes.json yet — will retry on next save.', e);
+      }
+    }
+    document.getElementById('notes-textarea').value = notes;
 
     const syntheticLoanCount = removeSyntheticLoanEntries();
     const mortgageMigration = migrateMortgageSubcategories();
@@ -1854,6 +1894,11 @@ async function saveAllChanges() {
       await updateFileContent(fileIds['account_balances.json'], JSON.stringify(accountBalances, null, 2));
     } else {
       await createFileInFolder('account_balances.json', JSON.stringify(accountBalances, null, 2));
+    }
+    if (fileIds['notes.json']) {
+      await updateFileContent(fileIds['notes.json'], JSON.stringify(notes));
+    } else {
+      await createFileInFolder('notes.json', JSON.stringify(notes));
     }
     unsavedChanges = false;
     updateUnsavedBar();
