@@ -326,7 +326,11 @@
       </label>
       <button id="generate-insights-btn" class="btn-sm">Generate insights</button>
       <div id="insights-status" style="margin-top: 10px; font-size: 13px; color: var(--text-dim);"></div>
-      <div id="insights-result" style="margin-top: 10px; white-space: pre-wrap; font-size: 14px; line-height: 1.5;"></div>
+      <div id="insights-chat" style="margin-top: 10px; display: flex; flex-direction: column; gap: 12px;"></div>
+      <div class="format-row" style="margin-top: 10px;">
+        <input type="text" id="insights-chat-input" class="cat-select" placeholder="Ask a follow-up… (e.g. why did groceries go up?)" style="flex: 1 1 260px;">
+        <button id="insights-chat-send-btn" class="btn-sm">Send</button>
+      </div>
     </details>
 
     <details class="card">
@@ -2402,9 +2406,23 @@ function renderBudgetsUI() {
 // is just skipped rather than recomputed from scratch.
 function buildInsightsSummary(includeMerchantDetail) {
   const lines = [];
-  const monthCount = Math.max(visibleMonths().length, 1);
 
-  lines.push('## Monthly budget vs actual spend (current date range, kr/month)');
+  // Two independent selectors exist in this app — the Overview/Savings/Transactions range
+  // (rangeFilter) and the Net Worth chart's own (netWorthRangeFilter), which can cover a
+  // different span (e.g. extending into future projected months). State both explicitly so
+  // Claude frames its answer around the period actually selected, not "all time."
+  const months = visibleMonths();
+  if (months.length) {
+    lines.push(`Selected date range (Overview/Savings/Transactions): ${months[0]} through ${months[months.length - 1]} (${months.length} month${months.length === 1 ? '' : 's'})`);
+  }
+  if (netWorthChartInstance && netWorthChartInstance.data.labels.length) {
+    const nwLabels = netWorthChartInstance.data.labels;
+    lines.push(`Selected date range (Net Worth chart, may differ from above and can extend into future projected months): ${nwLabels[0]} through ${nwLabels[nwLabels.length - 1]}`);
+  }
+  lines.push('');
+
+  const monthCount = Math.max(months.length, 1);
+  lines.push('## Monthly budget vs actual spend (selected date range above, kr/month)');
   categoryTree.forEach(entry => {
     if (entry.key === 'Excluded') return;
     const monthlyBudget = effectiveMonthlyBudget(entry);
@@ -2432,67 +2450,84 @@ function buildInsightsSummary(includeMerchantDetail) {
   }
 
   if (includeMerchantDetail) {
-    // Capped to the last 3 months to bound token cost — plenty for "what's changed recently"
-    // without shipping years of individual transactions.
-    const recentMonths = new Set(sortedMonthList().slice(-3));
-    const rows = dataset
-      .filter(t => recentMonths.has(t.month) && t.category !== 'Excluded')
+    // Same selected range as the budget section above (not a fixed "last 3 months") — capped at
+    // 150 rows, largest-first, to bound token cost if the range is long.
+    const rows = rangeFilteredDataset()
+      .filter(t => t.category !== 'Excluded')
       .sort((a, b) => b.amount - a.amount)
       .slice(0, 150);
-    lines.push('', '## Individual transactions, last 3 months, largest first (date | merchant | amount kr | category)');
+    lines.push('', '## Individual transactions in the selected date range, largest first (date | merchant | amount kr | category)');
     rows.forEach(t => lines.push(`${t.txn_date} | ${t.merchant} | ${Math.round(t.amount)} | ${t.category}`));
   }
 
   return lines.join('\n');
 }
 
-async function generateInsights() {
+// The running chat with Claude about the summarized data — [{role: 'user'|'assistant', content}].
+// Anthropic's API is stateless per request, so every call resends this whole array; "Generate
+// insights" starts a fresh one, follow-up messages append to it.
+let insightsConversation = [];
+
+function renderInsightsChat() {
+  const chatEl = document.getElementById('insights-chat');
+  chatEl.innerHTML = '';
+  insightsConversation.forEach(msg => {
+    const div = document.createElement('div');
+    div.style.cssText = 'white-space: pre-wrap; font-size: 14px; line-height: 1.5;';
+    if (msg.role === 'user') {
+      div.style.color = 'var(--text-dim)';
+      // The first user turn is the auto-built data summary, not something typed — show a short
+      // label instead of the full (long, data-heavy) prompt text.
+      div.textContent = 'You: ' + (msg.isSummaryPrompt ? '(requested insights from your current data)' : msg.content);
+    } else {
+      div.textContent = msg.content;
+    }
+    chatEl.appendChild(div);
+  });
+}
+
+async function callAnthropicMessages(apiKey, messages) {
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+      // Documented opt-in for calling the API directly from browser JS — the "bring your own
+      // key" pattern this feature relies on instead of standing up a server-side proxy.
+      'anthropic-dangerous-direct-browser-access': 'true'
+    },
+    body: JSON.stringify({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 1024,
+      messages: messages.map(m => ({ role: m.role, content: m.content }))
+    })
+  });
+  if (!res.ok) {
+    const errBody = await res.text();
+    throw new Error(`${res.status} ${errBody}`);
+  }
+  const data = await res.json();
+  return (data.content || []).map(b => b.text || '').join('\n').trim();
+}
+
+// Reads the key from the input (falling back to whatever's cached), persisting it back to
+// localStorage so it survives a reload — same cache-locally pattern as FOLDER_STORAGE_KEY.
+function getStoredApiKey() {
   const apiKeyInput = document.getElementById('anthropic-api-key');
   const apiKey = apiKeyInput.value.trim() || localStorage.getItem(ANTHROPIC_API_KEY_STORAGE_KEY) || '';
-  if (!apiKey) {
-    showToast('Enter your Anthropic API key first.', 'error');
-    return;
-  }
-  localStorage.setItem(ANTHROPIC_API_KEY_STORAGE_KEY, apiKey);
+  if (apiKey) localStorage.setItem(ANTHROPIC_API_KEY_STORAGE_KEY, apiKey);
+  return apiKey;
+}
 
-  const includeMerchantDetail = document.getElementById('insights-include-merchants').checked;
-  const summary = buildInsightsSummary(includeMerchantDetail);
+async function sendPendingInsightsRequest(apiKey) {
   const statusEl = document.getElementById('insights-status');
-  const resultEl = document.getElementById('insights-result');
   statusEl.textContent = 'Asking Claude…';
-  resultEl.textContent = '';
-
   try {
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-        // Documented opt-in for calling the API directly from browser JS — the "bring your own
-        // key" pattern this feature relies on instead of standing up a server-side proxy.
-        'anthropic-dangerous-direct-browser-access': 'true'
-      },
-      body: JSON.stringify({
-        model: 'claude-haiku-4-5-20251001',
-        max_tokens: 1024,
-        messages: [{
-          role: 'user',
-          content: 'You\'re a personal finance assistant. Based on this summarized financial ' +
-            'data (amounts in SEK), give 3-5 concise, specific insights about spending trends, ' +
-            'budget adherence, and savings/net worth trajectory. Be direct and specific with ' +
-            'numbers, not generic advice.\n\n' + summary
-        }]
-      })
-    });
-    if (!res.ok) {
-      const errBody = await res.text();
-      throw new Error(`${res.status} ${errBody}`);
-    }
-    const data = await res.json();
-    const text = (data.content || []).map(b => b.text || '').join('\n').trim();
+    const replyText = await callAnthropicMessages(apiKey, insightsConversation);
     statusEl.textContent = '';
-    resultEl.textContent = text || 'No response text returned.';
+    insightsConversation.push({ role: 'assistant', content: replyText || 'No response text returned.' });
+    renderInsightsChat();
   } catch (err) {
     statusEl.textContent = '';
     showToast('Insights request failed: ' + err.message, 'error');
@@ -2500,10 +2535,54 @@ async function generateInsights() {
   }
 }
 
+async function startInsightsConversation() {
+  const apiKey = getStoredApiKey();
+  if (!apiKey) {
+    showToast('Enter your Anthropic API key first.', 'error');
+    return;
+  }
+
+  const includeMerchantDetail = document.getElementById('insights-include-merchants').checked;
+  const summary = buildInsightsSummary(includeMerchantDetail);
+  const prompt = 'You\'re a personal finance assistant. Based on this summarized financial ' +
+    'data (amounts in SEK), give 3-5 concise, specific insights about spending trends, ' +
+    'budget adherence, and savings/net worth trajectory. Be direct and specific with ' +
+    'numbers, not generic advice. The user may ask follow-up questions after this — answer ' +
+    'those using the same data below.\n\n' + summary;
+
+  insightsConversation = [{ role: 'user', content: prompt, isSummaryPrompt: true }];
+  renderInsightsChat();
+  await sendPendingInsightsRequest(apiKey);
+}
+
+async function sendInsightsChatMessage() {
+  const input = document.getElementById('insights-chat-input');
+  const text = input.value.trim();
+  if (!text) return;
+  if (!insightsConversation.length) {
+    showToast('Click "Generate insights" first to start the conversation.', 'error');
+    return;
+  }
+  const apiKey = getStoredApiKey();
+  if (!apiKey) {
+    showToast('Enter your Anthropic API key first.', 'error');
+    return;
+  }
+
+  insightsConversation.push({ role: 'user', content: text });
+  input.value = '';
+  renderInsightsChat();
+  await sendPendingInsightsRequest(apiKey);
+}
+
 function setupInsightsUI() {
   const stored = localStorage.getItem(ANTHROPIC_API_KEY_STORAGE_KEY);
   if (stored) document.getElementById('anthropic-api-key').value = stored;
-  document.getElementById('generate-insights-btn').addEventListener('click', generateInsights);
+  document.getElementById('generate-insights-btn').addEventListener('click', startInsightsConversation);
+  document.getElementById('insights-chat-send-btn').addEventListener('click', sendInsightsChatMessage);
+  document.getElementById('insights-chat-input').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') sendInsightsChatMessage();
+  });
 }
 
 // ============================================================
