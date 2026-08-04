@@ -329,11 +329,15 @@
         salary are all computed automatically from your imported Personkonto/Sparkonto
         transactions — nothing to enter by hand. The projection assumes a regular salary through
         Jul-27, then the a-kassa/insurance unemployment benefit step-down schedule, out to
-        however far the "To" selector below reaches.
+        however far the "To" selector below reaches. The ISK pot itself is only ever tracked from
+        net deposits/withdrawals, which doesn't capture actual investment performance — enter your
+        broker's reported year-to-date % change below to correct it to today's real value (applied
+        from the start of the current calendar year onward).
       </p>
       <div id="networth-range-filter-row">
         <label>From <select id="networth-from-filter" class="cat-select"></select></label>
         <label>To <select id="networth-to-filter" class="cat-select"></select></label>
+        <label>ISK YTD % change <input type="number" id="isk-ytd-pct-input" class="budget-input" step="0.1" placeholder="e.g. 8.5"></label>
       </div>
       <div id="networth-chart-wrap" style="position:relative; height:340px;"><canvas id="networth-chart"></canvas></div>
     </details>
@@ -432,6 +436,7 @@ let budgetPeriods = {}; // categoryPath -> 'year' for budgets entered/displayed 
 const NET_WORTH_ACCOUNT = 'Sparkonto'; // the only balance-tracked account — populated automatically
   // from the Saldo column of each Sparkonto CSV import (see handleFile/saveImport), not user-editable
 let accountBalances = {}; // { month ("Mon-YY"): { [NET_WORTH_ACCOUNT]: balance } } — same month format as everything else
+let iskYtdPct = 0; // manual "ISK grew/shrank X% year-to-date" correction (computeFlowBucketBalances only tracks net deposits, not investment performance) — see the Net Worth card's ISK YTD % input, synced to isk_ytd_pct.json
 let notes = ''; // free-form text from the Notes card, synced to notes.json — see setupNotesUI()
 let chartInstance = null;
 let selectedFormat = 'eurobonus';
@@ -496,6 +501,11 @@ window.onload = () => {
   document.getElementById('save-changes-btn').addEventListener('click', saveAllChanges);
   document.getElementById('add-category-btn').addEventListener('click', addCategory);
   setupInsightsUI();
+  document.getElementById('isk-ytd-pct-input').addEventListener('change', (e) => {
+    iskYtdPct = parseFloat(e.target.value) || 0;
+    markUnsaved();
+    renderNetWorthChart();
+  });
   document.getElementById('notes-textarea').addEventListener('input', (e) => {
     notes = e.target.value;
     markUnsaved();
@@ -803,6 +813,18 @@ async function loadAllData() {
         console.error('Could not create account_balances.json yet — will retry on next save.', e);
       }
     }
+
+    if (fileIds['isk_ytd_pct.json']) {
+      iskYtdPct = JSON.parse(await downloadFile(fileIds['isk_ytd_pct.json']));
+    } else {
+      iskYtdPct = 0;
+      try {
+        await createFileInFolder('isk_ytd_pct.json', JSON.stringify(iskYtdPct));
+      } catch (e) {
+        console.error('Could not create isk_ytd_pct.json yet — will retry on next save.', e);
+      }
+    }
+    document.getElementById('isk-ytd-pct-input').value = iskYtdPct || '';
 
     if (fileIds['notes.json']) {
       notes = JSON.parse(await downloadFile(fileIds['notes.json']));
@@ -1895,6 +1917,11 @@ async function saveAllChanges() {
     } else {
       await createFileInFolder('account_balances.json', JSON.stringify(accountBalances, null, 2));
     }
+    if (fileIds['isk_ytd_pct.json']) {
+      await updateFileContent(fileIds['isk_ytd_pct.json'], JSON.stringify(iskYtdPct));
+    } else {
+      await createFileInFolder('isk_ytd_pct.json', JSON.stringify(iskYtdPct));
+    }
     if (fileIds['notes.json']) {
       await updateFileContent(fileIds['notes.json'], JSON.stringify(notes));
     } else {
@@ -2812,12 +2839,24 @@ function renderNetWorthChart() {
     const byMonth = computeFlowBucketBalances(bucket.key);
     if (!Object.keys(byMonth).length) return;
     let last = 0;
-    const data = months.map(m => {
+    let data = months.map(m => {
       if (Object.prototype.hasOwnProperty.call(byMonth, m)) last = byMonth[m];
       return last;
     });
+    let label = bucket.label;
+    // computeFlowBucketBalances only tracks net deposits/withdrawals, not actual investment
+    // performance — this manual "YTD % change" (see the Net Worth card's input) corrects the ISK
+    // pot for that, scaling every month from the start of the current calendar year onward
+    // (including forward-filled future months — it's a snapshot correction of today's real value,
+    // not a rate that should reset back to 1x at the next year boundary).
+    if (bucket.key === 'isk' && iskYtdPct) {
+      const yearStartLabel = 'Jan-' + todayMonthLabel().split('-')[1];
+      const factor = 1 + iskYtdPct / 100;
+      data = data.map((v, i) => (monthSortKey(months[i]) >= monthSortKey(yearStartLabel) ? v * factor : v));
+      label = `${bucket.label} (YTD ${iskYtdPct > 0 ? '+' : ''}${iskYtdPct}%)`;
+    }
     datasets.push({
-      label: bucket.label,
+      label,
       data,
       backgroundColor: colorForIndex((hasSparkontoBalance ? 1 : 0) + idx),
       stack: 'balance',
