@@ -140,6 +140,11 @@ function parsePersonkontoRows(rows) {
     } else if (rubrik === 'Lön') {
       merchant = 'Lön (salary)';
       category = 'Excluded';
+    } else if (rubrik === 'Skatt') {
+      // Tax refund (skatteåterbäring) credited to the Personkonto — income, not spend, same
+      // treatment as Lön.
+      merchant = 'Skatteåterbäring (tax refund)';
+      category = 'Excluded';
     } else if (/^Nordea Vardagspaket/i.test(rubrik)) {
       merchant = 'Nordea Vardagspaket';
       category = 'Excluded';
@@ -195,10 +200,13 @@ function parseSparkontoRows(rows) {
       // (see CATEGORY_TREE's "Amortization/interest"), alongside — not replacing — any
       // pre-existing entries recorded elsewhere (e.g. from a Personkonto import).
       category = 'Housing/Mortgage > Amortization/interest';
-    } else if (/^(Ny|Förfall) FASTRÄNTEPLACERING/i.test(rubrik)) {
+    } else if (/^(Ny|Förfall|Förtidsinlösen) FASTRÄNTEPL/i.test(rubrik)) {
+      // Matches on the "FASTRÄNTEPL" prefix rather than the full "FASTRÄNTEPLACERING" word, since
+      // real exports also abbreviate it (e.g. "Förtidsinlösen FASTRÄNTEPL. 4418 00" for an early
+      // redemption, which still spells out the full word for Ny/Förfall).
       merchant = 'Fasträntplacering';
       category = 'Excluded'; // internal transfer to/from an owned fixed-term deposit, not spend
-      flowBucket = 'fixed-term-deposit'; // principal moving in (Ny) or out (Förfall)
+      flowBucket = 'fixed-term-deposit'; // principal moving in (Ny) or out (Förfall/Förtidsinlösen)
     } else if (/^(Prel\.skatt|Ränta) FASTRÄNTEPLACERING/i.test(rubrik)) {
       // Tax withheld / interest earned on the deposit — a side effect of holding it, not a
       // change in principal, so this does NOT feed the fixed-term-deposit running balance
