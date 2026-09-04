@@ -841,6 +841,7 @@ async function loadAllData() {
     const syntheticLoanCount = removeSyntheticLoanEntries();
     const mortgageMigration = migrateMortgageSubcategories();
     const housingFeeMigration = mergeHousingAssociationFeeMerchant();
+    const earlyRedemptionCount = migrateEarlyFixedTermRedemption();
 
     setStatus(`Loaded ${dataset.length} transactions.`);
     renderOverview();
@@ -887,6 +888,15 @@ async function loadAllData() {
         parts.push('fixed a standing override that was excluding it going forward');
       }
       showToast(`Housing association fee cleanup: ${parts.join(', ')}. Click "Save to Drive" to make this permanent.`, 'success');
+    }
+    if (earlyRedemptionCount) {
+      markUnsaved();
+      showToast(
+        `Fixed ${earlyRedemptionCount} early fixed-term-deposit redemption transaction${earlyRedemptionCount === 1 ? '' : 's'} ` +
+        `saved before that pattern was recognized — the Net Worth chart's fixed-term-deposit pot should now drop correctly. ` +
+        `Click "Save to Drive" to make this permanent.`,
+        'success'
+      );
     }
   } catch (err) {
     setStatus('');
@@ -2153,6 +2163,39 @@ function mergeHousingAssociationFeeMerchant() {
   });
 
   return { renamedCount, removedDuplicateCount, overrideFixed, recategorizedCount };
+}
+
+// One-time migration: "Förtidsinlösen FASTRÄNTEPL" (early redemption of the fixed-term deposit)
+// wasn't recognized by parseSparkontoRows until that pattern was added — any transaction saved
+// before that fix still carries the raw, untranslated Rubrik text as its merchant with no
+// _flowBucket at all, so it never fed the fixed-term-deposit pot's running balance (the pot just
+// kept forward-filling its old value forever, even after the money actually left). Simply
+// re-importing the same file wouldn't fix this either: the freshly-parsed row's merchant would be
+// the normalized "Fasträntplacering", which doesn't match the stale row's raw-text merchant, so
+// transactionKey() would treat it as a brand new transaction and create a duplicate instead of
+// patching the existing one in — same class of bug mergeHousingAssociationFeeMerchant() above
+// fixed for a different merchant. Early redemption is always a withdrawal (principal returning to
+// Sparkonto), same direction as Förfall, so _rawSign is always +1 here — not recoverable from the
+// stored (always-absolute) amount, but not ambiguous either.
+function migrateEarlyFixedTermRedemption() {
+  const NEW_MERCHANT = 'Fasträntplacering';
+  let count = 0;
+  const oldMerchants = new Set();
+  dataset.forEach(t => {
+    if (t.card !== 'Sparkonto' || t._flowBucket) return;
+    if (!/^Förtidsinlösen FASTRÄNTEPL/i.test(t.merchant)) return;
+    oldMerchants.add(t.merchant);
+    t.merchant = NEW_MERCHANT;
+    t.category = 'Excluded';
+    t._flowBucket = 'fixed-term-deposit';
+    t._rawSign = 1;
+    count++;
+  });
+  oldMerchants.forEach(old => {
+    delete overrides[old];
+    delete learnedLookup[old];
+  });
+  return count;
 }
 
 function addCategory() {
