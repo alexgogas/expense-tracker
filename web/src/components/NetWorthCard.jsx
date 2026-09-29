@@ -1,7 +1,7 @@
 import { useRef } from 'preact/hooks';
 import { useSignalEffect } from '@preact/signals';
 import Chart from 'chart.js/auto';
-import { dataset, accountBalances, categoryTree, mortgageModel, incomeModel, iskYtdPct, netWorthRangeFilter, NET_WORTH_ACCOUNT } from '../state.js';
+import { dataset, accountBalances, categoryTree, categoryRoles, mortgageModel, incomeModel, iskYtdPct, netWorthRangeFilter, NET_WORTH_ACCOUNT } from '../state.js';
 import { effectiveMonthlyBudget } from '../budgets.js';
 import { colorForIndex, legendDoubleClickHandler, slidingWindowTrend, downloadChartPNG } from '../lib/charts.js';
 import { todayMonthLabel, monthSortKey, monthsElapsed, nextMonthLabel } from '../lib/months.js';
@@ -88,7 +88,7 @@ export function buildNetWorthChartData() {
   });
 
   const mortgageData = months.map(m =>
-    dataset.value.filter(i => i.month === m && i.category === 'Housing/Mortgage > Amortization/interest').reduce((s, i) => s + i.amount, 0)
+    dataset.value.filter(i => i.month === m && i.category === categoryRoles.value.mortgageCost).reduce((s, i) => s + i.amount, 0)
   );
   datasets.push({
     label: 'Mortgage cost',
@@ -136,7 +136,7 @@ export function buildNetWorthChartData() {
     .filter(c => c.key !== 'Excluded')
     .reduce((s, c) => s + (effectiveMonthlyBudget(c) || 0), 0);
 
-  const housingMortgageEntry = categoryTree.value.find(c => c.key === 'Housing/Mortgage');
+  const housingMortgageEntry = categoryTree.value.find(c => c.key === categoryRoles.value.housing);
   const housingMortgageBudget = housingMortgageEntry ? (effectiveMonthlyBudget(housingMortgageEntry) || 0) : 0;
   const sortedAmortSchedule = sortedAmortizationSchedule();
 

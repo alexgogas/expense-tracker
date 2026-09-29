@@ -23,7 +23,7 @@ import {
   fileIds, folderId, dataset, aliases, overrides, learnedLookup, accountBalances,
   categoryTree, budgets, budgetPeriods, iskYtdPct, notes, mortgageModel,
   sparkontoReferences, incomeModel, unsavedChanges, REQUIRED_FILES, FOLDER_STORAGE_KEY,
-  DEFAULT_BANK_REFERENCES
+  DEFAULT_BANK_REFERENCES, categorizationRules, categoryRoles
 } from './state.js';
 import { downloadFile, updateFileContent, createFileInFolder, listFilesInFolder } from './drive.js';
 import { setStatus, showToast } from './lib/ui.js';
@@ -50,8 +50,29 @@ export function buildAppSettings() {
   return {
     categoryTree: categoryTree.value, budgets: budgets.value, budgetPeriods: budgetPeriods.value,
     iskYtdPct: iskYtdPct.value, notes: notes.value, mortgageModel: mortgageModel.value,
-    sparkontoReferences: sparkontoReferences.value, incomeModel: incomeModel.value
+    sparkontoReferences: sparkontoReferences.value, incomeModel: incomeModel.value,
+    categorizationRules: categorizationRules.value, categoryRoles: categoryRoles.value
   };
+}
+
+function defaultRules() {
+  return DEFAULT_CATEGORIZATION_RULES.map(r => ({ ...r }));
+}
+
+// The engine assigns EXCLUDED and UNCATEGORIZED itself, so they must always exist in the tree (for
+// dropdowns, budgets, grouping) — re-added if a saved tree is somehow missing them. Pure: returns
+// the same array if nothing needed adding.
+function withBuiltInCategories(tree) {
+  let next = tree;
+  if (!next.some(c => c.key === EXCLUDED)) next = [...next, { key: EXCLUDED, subs: null }];
+  const [otherKey, uncategorizedSub] = UNCATEGORIZED.split(' > ');
+  const other = next.find(c => c.key === otherKey);
+  if (!other) {
+    next = [...next, { key: otherKey, subs: [uncategorizedSub] }];
+  } else if (!(other.subs || []).includes(uncategorizedSub)) {
+    next = next.map(c => (c === other ? { ...c, subs: [...(c.subs || []), uncategorizedSub] } : c));
+  }
+  return next;
 }
 
 // Best-effort read of a pre-consolidation settings file, used only during the one-time migration
@@ -141,6 +162,10 @@ export async function loadAllData() {
       // still yield '' for it rather than undefined.
       sparkontoReferences.value = { ...DEFAULT_BANK_REFERENCES, ...(s.sparkontoReferences ?? {}) };
       incomeModel.value = s.incomeModel ?? freshIncomeModel();
+      // Settings saved before these existed re-seed from the defaults (identical behavior to the
+      // old hardcoded rules) until the next Save to Drive writes them out.
+      categorizationRules.value = s.categorizationRules ?? defaultRules();
+      categoryRoles.value = { ...DEFAULT_CATEGORY_ROLES, ...(s.categoryRoles ?? {}) };
     } else {
       // One-time migration: read whichever pre-consolidation files exist (all in parallel), fall
       // back to fresh defaults for anything missing, then write the new combined file.
@@ -162,6 +187,8 @@ export async function loadAllData() {
       mortgageModel.value = migratedMortgageModel;
       sparkontoReferences.value = { ...DEFAULT_BANK_REFERENCES };
       incomeModel.value = freshIncomeModel();
+      categorizationRules.value = defaultRules();
+      categoryRoles.value = { ...DEFAULT_CATEGORY_ROLES };
       try {
         await createFileInFolder('app_settings.json', JSON.stringify(buildAppSettings(), null, 2));
       } catch (e) {
@@ -172,6 +199,7 @@ export async function loadAllData() {
     // TODO (future pass): removeSyntheticLoanEntries(), migrateMortgageSubcategories(),
     // mergeHousingAssociationFeeMerchant(), migrateEarlyFixedTermRedemption() — see the file-level
     // comment above.
+    categoryTree.value = withBuiltInCategories(categoryTree.value);
     initOverviewState();
     unsavedChanges.value = false;
     setStatus(`Loaded ${dataset.value.length} transactions.`);

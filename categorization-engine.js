@@ -32,30 +32,59 @@ CATEGORY_TREE.forEach(cat => {
   else LEAF_CATEGORIES.push(cat.key);
 });
 
-// ---------- Fallback keyword rules ----------
-// Used only when a merchant has no alias, no override, and no entry in the learned
-// merchant->category lookup. Best-effort; anything unmatched surfaces to the user.
-const KEYWORD_RULES = [
-  { pattern: /UBER|TAXI|\bSL\b|ARLANDA EXPRESS|ARLANDA WALK|ARRIVA|KEOLIS|KTEL|\bNS\b|DSB/i, category: "Transportation" },
-  { pattern: /RYANAIR|EUROWINGS|FERRYSCANNER|BKG\*HOTEL|HOTEL|AEGEAN|FLYSAS|KIWI\.COM|TRAVIX/i, category: "Flights & Travel Booking" },
-  { pattern: /\bICA\b|COOP |HEMKOP|HEMKÖP|ALBERT HEIJN|SYSTEMBOLAGET|X:-TRA|\bXTRA\b|MASOUTIS/i, category: "Groceries" },
-  { pattern: /APOTEKET|APOTEK|FARMAKEIO|TANDVAYRD|TANDHYGIENIST|TANDLAKARE|APOHEM|APOTEA/i, category: "Health & Wellness" },
-  { pattern: /BAGERI|COFFEE|KAFFE|GELATO|KONDITORI|CAFE |CAFÉ/i, category: "Restaurants, Cafes & Bars > Cafe/Bakery" },
-  { pattern: /\bBAR\b|PUB |BREWDOG|TAVERN|BEER|OLSTUGAN|NIGHTCLUB|LOUNGE/i, category: "Restaurants, Cafes & Bars > Bars" },
-  { pattern: /RESTAURANG|RESTAURANT|BURGER|GRILL|PIZZA|PIZZERIA|KEBAB|THAI|SUSHI/i, category: "Restaurants, Cafes & Bars > Restaurant" },
-  { pattern: /GOOGLE PLAY|PRIME VIDEO|SPOTIFY|MICROSOFT|ADOBE|NETFLIX|ANTHROPIC|APPLE\.COM/i, category: "Subscriptions/Digital Services" },
-  { pattern: /7-ELEVEN|PRESSBYRAN|PRESSBYRÅN/i, category: "Other > 7-Eleven" },
-  { pattern: /UBER.*EATS|WOLT|FOODORA/i, category: "Delivery Apps" },
+// Built-in category names with app-wide meaning: EXCLUDED is left out of every total, UNCATEGORIZED
+// flags a row for manual review. These are never user-renamable.
+const EXCLUDED = 'Excluded';
+const UNCATEGORIZED = 'Other > Uncategorized';
+
+// ---------- Default categorization rules ----------
+// Starter set only — the live, user-editable list is `categorizationRules` in app_settings.json,
+// passed in via processImport's `options.rules`. Tried in order against the canonical merchant
+// name (case-insensitive regex source strings, so they round-trip through JSON); first match wins.
+// Used only when a merchant has no override and no learned-lookup entry; anything unmatched
+// surfaces to the user for review.
+const DEFAULT_CATEGORIZATION_RULES = [
+  { pattern: 'UBER|TAXI|\\bSL\\b|ARLANDA EXPRESS|ARLANDA WALK|ARRIVA|KEOLIS|KTEL|\\bNS\\b|DSB', category: 'Transportation' },
+  { pattern: 'RYANAIR|EUROWINGS|FERRYSCANNER|BKG\\*HOTEL|HOTEL|AEGEAN|FLYSAS|KIWI\\.COM|TRAVIX', category: 'Flights & Travel Booking' },
+  { pattern: '\\bICA\\b|COOP |HEMKOP|HEMKÖP|ALBERT HEIJN|SYSTEMBOLAGET|X:-TRA|\\bXTRA\\b|MASOUTIS', category: 'Groceries' },
+  { pattern: 'APOTEKET|APOTEK|FARMAKEIO|TANDVAYRD|TANDHYGIENIST|TANDLAKARE|APOHEM|APOTEA', category: 'Health & Wellness' },
+  { pattern: 'BAGERI|COFFEE|KAFFE|GELATO|KONDITORI|CAFE |CAFÉ', category: 'Restaurants, Cafes & Bars > Cafe/Bakery' },
+  { pattern: '\\bBAR\\b|PUB |BREWDOG|TAVERN|BEER|OLSTUGAN|NIGHTCLUB|LOUNGE', category: 'Restaurants, Cafes & Bars > Bars' },
+  { pattern: 'RESTAURANG|RESTAURANT|BURGER|GRILL|PIZZA|PIZZERIA|KEBAB|THAI|SUSHI', category: 'Restaurants, Cafes & Bars > Restaurant' },
+  { pattern: 'GOOGLE PLAY|PRIME VIDEO|SPOTIFY|MICROSOFT|ADOBE|NETFLIX|ANTHROPIC|APPLE\\.COM', category: 'Subscriptions/Digital Services' },
+  { pattern: '7-ELEVEN|PRESSBYRAN|PRESSBYRÅN', category: 'Other > 7-Eleven' },
+  { pattern: 'UBER.*EATS|WOLT|FOODORA', category: 'Delivery Apps' },
   // Most Swish transfers are personal (splitting a bill, repaying a friend), not real spend — a
-  // low-priority default, not a forced category, so a specific "Swish: <name>" merchant can still
-  // get its own override/learned category (set once via the Transactions browser) that takes
-  // priority over this, same as any other merchant.
-  { pattern: /^Swish:/i, category: "Excluded" },
+  // low-priority default. Add a more specific "^Swish: <name>" rule above it (or override a
+  // merchant in the Transactions browser) to categorize a particular contact differently.
+  { pattern: '^Swish:', category: EXCLUDED },
 ];
 
-function applyKeywordRules(merchant) {
-  for (const rule of KEYWORD_RULES) {
-    if (rule.pattern.test(merchant)) return rule.category;
+// Categories the parsers assign by *role* rather than by keyword — also user-editable
+// (`categoryRoles` in app_settings.json) so renaming these categories can't break the parsers or
+// the Net Worth chart, which looks them up by role too.
+const DEFAULT_CATEGORY_ROLES = {
+  housing: 'Housing/Mortgage',                                  // top level whose budget the mortgage projection replaces
+  housingFee: 'Housing/Mortgage > Avgift',                      // housing-association fee (Personkonto Bankgiro payment)
+  mortgageCost: 'Housing/Mortgage > Amortization/interest',     // Sparkonto loan rollover
+};
+
+// [{ pattern: string, category }] -> [{ regex, category }], silently skipping empty or invalid
+// patterns (the rules editor already flags those) so one bad rule can't break a whole import.
+function compileRules(rules) {
+  const compiled = [];
+  for (const rule of rules || []) {
+    if (!rule || !rule.pattern || !rule.category) continue;
+    try {
+      compiled.push({ regex: new RegExp(rule.pattern, 'i'), category: rule.category });
+    } catch (e) { /* invalid regex — skipped */ }
+  }
+  return compiled;
+}
+
+function applyRules(merchant, compiledRules) {
+  for (const rule of compiledRules) {
+    if (rule.regex.test(merchant)) return rule.category;
   }
   return null;
 }
@@ -64,7 +93,8 @@ function applyKeywordRules(merchant) {
 // aliases: { rawName: canonicalName }
 // overrides: { canonicalName: category }
 // learnedLookup: { canonicalName: category }  (built from the existing categorized history)
-function categorizeMerchant(rawMerchant, aliases, overrides, learnedLookup) {
+// compiledRules: output of compileRules(); defaults to the built-in starter rules.
+function categorizeMerchant(rawMerchant, aliases, overrides, learnedLookup, compiledRules = compileRules(DEFAULT_CATEGORIZATION_RULES)) {
   const trimmed = rawMerchant.trim();
   const canonical = aliases[trimmed] || trimmed;
 
@@ -74,11 +104,11 @@ function categorizeMerchant(rawMerchant, aliases, overrides, learnedLookup) {
   if (learnedLookup[canonical]) {
     return { merchant: canonical, category: learnedLookup[canonical], matched: 'learned' };
   }
-  const keywordMatch = applyKeywordRules(canonical);
-  if (keywordMatch) {
-    return { merchant: canonical, category: keywordMatch, matched: 'keyword' };
+  const ruleMatch = applyRules(canonical, compiledRules);
+  if (ruleMatch) {
+    return { merchant: canonical, category: ruleMatch, matched: 'rule' };
   }
-  return { merchant: canonical, category: 'Other > Uncategorized', matched: 'none' };
+  return { merchant: canonical, category: UNCATEGORIZED, matched: 'none' };
 }
 
 // ---------- Format-specific parsers ----------
@@ -118,7 +148,7 @@ function parseAmexRows(rows) {
   return out;
 }
 
-function parsePersonkontoRows(rows, references = {}) {
+function parsePersonkontoRows(rows, references = {}, roles = DEFAULT_CATEGORY_ROLES) {
   // rows: array of {Bokforingsdag, Belopp, Rubrik} from the Nordea CSV
   // references: same private settings object parseSparkontoRows takes — only housingFeeBankgiro
   // is read here (see below).
@@ -133,30 +163,27 @@ function parsePersonkontoRows(rows, references = {}) {
       const name = rubrik.replace(/^Swish (betalning|inbetalning)\s+/i, '').trim();
       merchant = 'Swish: ' + name;
       // category deliberately left unset here — resolved through the normal alias/override/
-      // learned-lookup/keyword pipeline below (see the "^Swish:" fallback rule in KEYWORD_RULES),
-      // not forced. This used to hardcode two real contacts' names directly in this file to force
-      // a specific category (one flat, one amount-sign-conditional) — removed so this public repo
-      // doesn't publish real people's names. Set a category once for a specific "Swish: <name>"
-      // merchant via the Transactions browser's category picker and it's remembered from then on,
-      // same as any other merchant.
+      // learned-lookup/rules pipeline (see the "^Swish:" default rule), not forced, so a specific
+      // contact can be categorized with a "^Swish: <name>" rule in the user's own settings or an
+      // override from the Transactions browser — never by naming anyone in this public file.
     } else if (/^Kortköp/i.test(rubrik)) {
       const m = rubrik.match(/^Kortköp\s+\d{6}\s+(.+)$/i);
       merchant = m ? m[1].trim() : rubrik;
     } else if (/SAS EuroBonus|EUROBONUS|American Exp/i.test(rubrik)) {
-      category = 'Excluded';
+      category = EXCLUDED;
     } else if (/^Överföring/i.test(rubrik)) {
-      category = 'Excluded';
+      category = EXCLUDED;
     } else if (rubrik === 'Lön') {
       merchant = 'Lön (salary)';
-      category = 'Excluded';
+      category = EXCLUDED;
     } else if (rubrik === 'Skatt') {
       // Tax refund (skatteåterbäring) credited to the Personkonto — income, not spend, same
       // treatment as Lön.
       merchant = 'Skatteåterbäring (tax refund)';
-      category = 'Excluded';
+      category = EXCLUDED;
     } else if (/^Nordea Vardagspaket/i.test(rubrik)) {
       merchant = 'Nordea Vardagspaket';
-      category = 'Excluded';
+      category = EXCLUDED;
     } else if (references.housingFeeBankgiro && rubrik.startsWith('Open Banking BG ' + references.housingFeeBankgiro)) {
       // The recurring housing-association fee ("Avgift", paid via a PSD2/Open Banking-initiated
       // Bankgiro payment to the association's dedicated Bankgiro number — matching on that number
@@ -165,7 +192,7 @@ function parsePersonkontoRows(rows, references = {}) {
       // the user's private settings (a Bankgiro number can be looked up to identify its owner),
       // and an unset one never matches.
       merchant = `Housing association fee (BG ${references.housingFeeBankgiro})`;
-      category = 'Housing/Mortgage > Avgift';
+      category = roles.housingFee;
     }
     // Autogiro, Betalning BG/PG, other Open Banking payments, Kontantuttag: leave category null,
     // resolved downstream
@@ -182,7 +209,7 @@ function parsePersonkontoRows(rows, references = {}) {
   return out;
 }
 
-function parseSparkontoRows(rows, references = {}) {
+function parseSparkontoRows(rows, references = {}, roles = DEFAULT_CATEGORY_ROLES) {
   // rows: array of {Bokforingsdag, Belopp, Rubrik} — same shape as Personkonto's raw CSV rows
   // (both are Nordea account exports with identical columns). Rubrik patterns below are the
   // user's own documented conventions for this specific Sparkonto (mortgage loan tranches,
@@ -216,34 +243,34 @@ function parseSparkontoRows(rows, references = {}) {
       // amortization from this data alone, so both are tracked as one combined subcategory
       // (see CATEGORY_TREE's "Amortization/interest"), alongside — not replacing — any
       // pre-existing entries recorded elsewhere (e.g. from a Personkonto import).
-      category = 'Housing/Mortgage > Amortization/interest';
+      category = roles.mortgageCost;
     } else if (/^(Ny|Förfall|Förtidsinlösen) FASTRÄNTEPL/i.test(rubrik)) {
       // Matches on the "FASTRÄNTEPL" prefix rather than the full "FASTRÄNTEPLACERING" word, since
       // real exports also abbreviate it (e.g. "Förtidsinlösen FASTRÄNTEPL. 4418 00" for an early
       // redemption, which still spells out the full word for Ny/Förfall).
       merchant = 'Fasträntplacering';
-      category = 'Excluded'; // internal transfer to/from an owned fixed-term deposit, not spend
+      category = EXCLUDED; // internal transfer to/from an owned fixed-term deposit, not spend
       flowBucket = 'fixed-term-deposit'; // principal moving in (Ny) or out (Förfall/Förtidsinlösen)
     } else if (/^(Prel\.skatt|Ränta) FASTRÄNTEPLACERING/i.test(rubrik)) {
       // Tax withheld / interest earned on the deposit — a side effect of holding it, not a
       // change in principal, so this does NOT feed the fixed-term-deposit running balance
       // (avoids double-counting alongside the Ny/Förfall pair around the same rollover).
       merchant = 'Fasträntplacering';
-      category = 'Excluded';
+      category = EXCLUDED;
     } else if (/^(Ränta|Preliminär skatt) \d{4}$/i.test(rubrik)) {
-      category = 'Excluded'; // account-level annual interest/tax entries, not spend
+      category = EXCLUDED; // account-level annual interest/tax entries, not spend
     } else if (references.isk && rubrikCompact.includes(references.isk)) {
       merchant = 'ISK transfer';
-      category = 'Excluded'; // moving to another owned asset (ISK), not spend
+      category = EXCLUDED; // moving to another owned asset (ISK), not spend
       flowBucket = 'isk';
     } else if ((references.externalSavings && rubrikCompact.includes(references.externalSavings)) || /^UTTAG NML/i.test(rubrik)) {
       merchant = 'External savings' + (references.externalSavings ? ` (${references.externalSavings})` : '');
-      category = 'Excluded'; // temporarily held at another bank, still owned
+      category = EXCLUDED; // temporarily held at another bank, still owned
       flowBucket = 'external-savings';
     } else if (/^Överföring/i.test(rubrik) && references.personkontoLink && rubrikCompact.includes(references.personkontoLink)) {
-      category = 'Excluded'; // transfer to/from the linked Personkonto
+      category = EXCLUDED; // transfer to/from the linked Personkonto
     } else if (/^Slutlikvid/i.test(rubrik) || rubrik === 'Insättning') {
-      category = 'Excluded'; // one-off property purchase settlement
+      category = EXCLUDED; // one-off property purchase settlement
     }
     // Uttag / Uttag utland / anything else unrecognized: leave category null so it surfaces for
     // manual review instead of guessing — these can be genuine spend (e.g. foreign ATM cash).
@@ -273,12 +300,17 @@ function isValidParsedRow(row) {
     typeof row.amount === 'number' && isFinite(row.amount));
 }
 
-function processImport(rawRows, format, aliases, overrides, learnedLookup, sparkontoReferences = {}) {
+// options.rules: the user's categorizationRules ([{ pattern, category }]); options.roles: the
+// user's categoryRoles. Both default to the built-in starter values, so calling this without
+// them (e.g. from a plain Node script) behaves exactly like the defaults.
+function processImport(rawRows, format, aliases, overrides, learnedLookup, sparkontoReferences = {}, options = {}) {
+  const compiledRules = compileRules(options.rules || DEFAULT_CATEGORIZATION_RULES);
+  const roles = { ...DEFAULT_CATEGORY_ROLES, ...(options.roles || {}) };
   let parsed;
   if (format === 'eurobonus') parsed = parseEuroBonusRows(rawRows);
   else if (format === 'amex') parsed = parseAmexRows(rawRows);
-  else if (format === 'personkonto') parsed = parsePersonkontoRows(rawRows, sparkontoReferences);
-  else if (format === 'sparkonto') parsed = parseSparkontoRows(rawRows, sparkontoReferences);
+  else if (format === 'personkonto') parsed = parsePersonkontoRows(rawRows, sparkontoReferences, roles);
+  else if (format === 'sparkonto') parsed = parseSparkontoRows(rawRows, sparkontoReferences, roles);
   else throw new Error('Unknown format: ' + format);
 
   parsed = parsed.filter(isValidParsedRow);
@@ -298,7 +330,7 @@ function processImport(rawRows, format, aliases, overrides, learnedLookup, spark
       results.push({ ...txn, merchant: canonical, category: txn._forcedCategory });
       continue;
     }
-    const { merchant, category, matched } = categorizeMerchant(txn.merchant, aliases, overrides, learnedLookup);
+    const { merchant, category, matched } = categorizeMerchant(txn.merchant, aliases, overrides, learnedLookup, compiledRules);
     const record = { ...txn, merchant, category };
     results.push(record);
     if (matched === 'none') unmatched.push(record);
@@ -310,7 +342,9 @@ function processImport(rawRows, format, aliases, overrides, learnedLookup, spark
 // Exports for use in the browser app
 if (typeof module !== 'undefined') {
   module.exports = {
-    CATEGORY_TREE, LEAF_CATEGORIES, categorizeMerchant, processImport, isValidParsedRow,
+    CATEGORY_TREE, LEAF_CATEGORIES, EXCLUDED, UNCATEGORIZED,
+    DEFAULT_CATEGORIZATION_RULES, DEFAULT_CATEGORY_ROLES, compileRules,
+    categorizeMerchant, processImport, isValidParsedRow,
     parseEuroBonusRows, parseAmexRows, parsePersonkontoRows, parseSparkontoRows
   };
 }

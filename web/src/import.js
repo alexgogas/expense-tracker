@@ -7,7 +7,7 @@
 import * as XLSX from 'xlsx';
 import {
   dataset, aliases, overrides, learnedLookup, sparkontoReferences, selectedFormat, pendingImport,
-  fileIds, accountBalances, NET_WORTH_ACCOUNT
+  fileIds, accountBalances, NET_WORTH_ACCOUNT, categorizationRules, categoryRoles
 } from './state.js';
 import { updateFileContent, createFileInFolder } from './drive.js';
 import { setStatus, showToast } from './lib/ui.js';
@@ -144,7 +144,8 @@ export async function handleFile(file) {
       rawRows = await parseXlsx(file, format);
     }
 
-    const { results, unmatched } = processImport(rawRows, format, aliases.value, overrides.value, learnedLookup.value, sparkontoReferences.value);
+    const { results, unmatched } = processImport(rawRows, format, aliases.value, overrides.value, learnedLookup.value, sparkontoReferences.value,
+      { rules: categorizationRules.value, roles: categoryRoles.value });
 
     // Skip transactions that already exist in the dataset, or repeat within this same file (same
     // date, merchant, amount and card), so re-importing an overlapping statement is a no-op.

@@ -65,6 +65,11 @@ export const mortgageModel = signal({
 // public source). The name predates housingFeeBankgiro, which the Personkonto parser reads.
 export const DEFAULT_BANK_REFERENCES = { isk: '', externalSavings: '', personkontoLink: '', housingFeeBankgiro: '' };
 export const sparkontoReferences = signal({ ...DEFAULT_BANK_REFERENCES });
+// User-editable categorization rules ([{ pattern, category }], ordered) and role categories
+// ({ housing, housingFee, mortgageCost }) — seeded from categorization-engine.js's defaults
+// (classic-script globals) until loadAllData() replaces them with the saved settings.
+export const categorizationRules = signal(DEFAULT_CATEGORIZATION_RULES.map(r => ({ ...r })));
+export const categoryRoles = signal({ ...DEFAULT_CATEGORY_ROLES });
 export const incomeModel = signal({
   regularSalaryCutoff: todayMonthLabel(),
   projectedMonthlySalary: 0,
