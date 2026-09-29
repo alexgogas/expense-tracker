@@ -8,19 +8,30 @@ import { markUnsaved } from './persistence.js';
 import { showToast } from './lib/ui.js';
 
 export function recategorizeTransaction(id, newCategory) {
-  const txn = dataset.value.find(t => t.id === id);
-  if (!txn || txn.category === newCategory) return;
-  const merchant = txn.merchant;
+  recategorizeTransactions([id], newCategory);
+}
+
+// Bulk version for the Transactions browser's multi-select: same merchant-wide semantics, applied
+// to every merchant among the selected rows at once (one dataset update, one toast).
+export function recategorizeTransactions(ids, newCategory) {
+  const idSet = new Set(ids);
+  const merchants = new Set(dataset.value.filter(t => idSet.has(t.id) && t.category !== newCategory).map(t => t.merchant));
+  if (!merchants.size) return;
   let count = 0;
-  const nextDataset = dataset.value.map(t => {
-    if (t.merchant === merchant && t.category !== newCategory) {
+  dataset.value = dataset.value.map(t => {
+    if (merchants.has(t.merchant) && t.category !== newCategory) {
       count++;
       return { ...t, category: newCategory };
     }
     return t;
   });
-  dataset.value = nextDataset;
-  overrides.value = { ...overrides.value, [merchant]: newCategory };
+  const nextOverrides = { ...overrides.value };
+  merchants.forEach(m => { nextOverrides[m] = newCategory; });
+  overrides.value = nextOverrides;
   markUnsaved();
-  if (count > 1) showToast(`Recategorized all ${count} "${merchant}" transactions to ${newCategory}.`, 'success');
+  if (merchants.size > 1) {
+    showToast(`Recategorized ${count} transactions from ${merchants.size} merchants to ${newCategory}.`, 'success');
+  } else if (count > 1) {
+    showToast(`Recategorized all ${count} "${[...merchants][0]}" transactions to ${newCategory}.`, 'success');
+  }
 }

@@ -209,6 +209,14 @@
   details.cat-group .sub-group { margin: 8px 12px; }
   details.cat-group table { margin: 0 12px 12px; width: calc(100% - 24px); }
   details.cat-group .sub-group table { margin: 0 0 10px; width: 100%; }
+  details.cat-group tr.selected td { background: rgba(94, 177, 255, 0.10); }
+  .bulk-bar {
+    position: sticky; top: var(--header-h, 0px); z-index: 5;
+    display: flex; align-items: center; flex-wrap: wrap; gap: 10px;
+    margin: 10px 0; padding: 8px 12px; font-size: 13px;
+    background: var(--panel-2); border: 1px solid var(--accent); border-radius: 8px;
+  }
+  .bulk-bar .bulk-hint { color: var(--text-dim); font-size: 12px; }
   .table-scroll { overflow-x: auto; }
 
   #signed-out-msg, #no-folder-msg { text-align: center; padding: 60px 20px; color: var(--text-dim); }

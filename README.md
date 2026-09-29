@@ -7,7 +7,7 @@ A personal expense tracker with no backend of its own — it reads and writes it
 ## What it does
 
 - Imports transactions from SAS EuroBonus (.xlsx), SAS Amex (.xlsx), and Nordea Personkonto/Sparkonto (.csv) exports, auto-categorizing each merchant via a small rules engine (aliases → your own corrections → learned history → your own editable pattern rules → manual review for anything left unmatched). Categories, rules, and budgets all live in your own Drive settings, and renaming or merging a category carries every rule and transaction along with it.
-- A dashboard: spend by category with click-to-drill-down, a savings chart (income minus spend per card), a net worth chart with a mortgage/income projection model, budgets with progress bars, and a full transaction browser with search/filter/recategorize.
+- A dashboard: spend by category with click-to-drill-down, a savings chart (income minus spend per card), a net worth chart with a mortgage/income projection model, budgets with progress bars, and a full transaction browser with search/filter/recategorize (one row or many at once).
 - Optional AI-generated spending insights, using your own Anthropic API key called directly from the browser — nothing passes through any server.
 
 ## Stack
