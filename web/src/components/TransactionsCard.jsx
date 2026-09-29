@@ -3,7 +3,7 @@ import { dataset, categoryTree, budgets, unsavedChanges } from '../state.js';
 import { rangeFilteredDataset, visibleMonths } from '../lib/dataset.js';
 import { effectiveMonthlyBudget } from '../budgets.js';
 import { leafCategories } from '../categories.js';
-import { recategorizeTransaction } from '../transactions.js';
+import { recategorizeTransaction, recategorizeTransactions } from '../transactions.js';
 import { SortableTable } from './SortableTable.jsx';
 import { SaveChangesButton } from './SaveChangesButton.jsx';
 
@@ -25,9 +25,27 @@ function groupMeta(rows, grandTotal, isExcluded, monthCount, totalIncome, monthl
   return parts.join(' · ');
 }
 
-function transactionsColumns() {
+// `selection` is { selected: Set<id>, setSelected(ids, on) } from TransactionsCard; `tableRows` are
+// the rows of the table these columns render, for its header's select-all checkbox.
+function transactionsColumns(selection, tableRows) {
   const leaves = leafCategories();
+  const { selected, setSelected } = selection;
+  const selectedCount = tableRows.filter(r => selected.has(r.id)).length;
   return [
+    {
+      label: 'Select',
+      sortable: false,
+      header: (
+        <input type="checkbox" aria-label="Select all in this group"
+          checked={selectedCount > 0 && selectedCount === tableRows.length}
+          indeterminate={selectedCount > 0 && selectedCount < tableRows.length}
+          onChange={(e) => setSelected(tableRows.map(r => r.id), e.currentTarget.checked)} />
+      ),
+      render: r => (
+        <input type="checkbox" aria-label={`Select ${r.merchant} on ${r.txn_date}`}
+          checked={selected.has(r.id)} onChange={(e) => setSelected([r.id], e.currentTarget.checked)} />
+      )
+    },
     { label: 'Date', sortValue: r => r.txn_date, render: r => r.txn_date },
     { label: 'Merchant', sortValue: r => r.merchant, render: r => r.merchant },
     { label: 'Amount', sortValue: r => r.amount, render: r => r.amount.toFixed(2), align: 'right' },
@@ -51,10 +69,9 @@ function transactionsColumns() {
 // render when that category ALSO has other, genuinely subcategorized transactions — folded into
 // "Other" (merging with an existing declared "Other" sub if there is one), but a purely flat
 // category (no subcategorized transactions at all, e.g. Groceries) keeps rendering as a flat list.
-function CategoryGroup({ top, topRows, grandTotal, monthCount, totalIncome, openKeys, forceOpen, toggleKey }) {
+function CategoryGroup({ top, topRows, grandTotal, monthCount, totalIncome, openKeys, forceOpen, toggleKey, selection }) {
   const topEntry = categoryTree.value.find(c => c.key === top);
   const topMonthlyBudget = topEntry ? effectiveMonthlyBudget(topEntry) : null;
-  const columns = transactionsColumns();
 
   const bySub = {};
   topRows.forEach(r => {
@@ -67,6 +84,7 @@ function CategoryGroup({ top, topRows, grandTotal, monthCount, totalIncome, open
     if (noSubRows.length) (bySub['Other'] = bySub['Other'] || []).push(...noSubRows);
   }
   const hasSubs = Object.keys(bySub).length > 0;
+  const rowClass = r => (selection.selected.has(r.id) ? 'selected' : undefined);
 
   return (
     <details class="cat-group" open={forceOpen || openKeys.has(top)} onToggle={(e) => toggleKey(top, e.currentTarget.open)}>
@@ -86,12 +104,12 @@ function CategoryGroup({ top, topRows, grandTotal, monthCount, totalIncome, open
                   <span><span class="caret">▶</span> <span class="name">{sub}</span></span>
                   <span class="meta">{groupMeta(subRows, grandTotal, false, monthCount, totalIncome, subMonthlyBudget)}</span>
                 </summary>
-                <SortableTable rows={subRows} columns={columns} defaultSortIdx={0} defaultSortDir="desc" rowKey={r => r.id} />
+                <SortableTable rows={subRows} columns={transactionsColumns(selection, subRows)} defaultSortIdx={1} defaultSortDir="desc" rowKey={r => r.id} rowClass={rowClass} />
               </details>
             );
           })
       ) : (
-        <SortableTable rows={topRows} columns={columns} defaultSortIdx={0} defaultSortDir="desc" rowKey={r => r.id} />
+        <SortableTable rows={topRows} columns={transactionsColumns(selection, topRows)} defaultSortIdx={1} defaultSortDir="desc" rowKey={r => r.id} rowClass={rowClass} />
       )}
     </details>
   );
@@ -105,6 +123,17 @@ export function TransactionsCard() {
   // the old app's freshly-built table. Persists across re-renders (filter changes, recategorizing
   // a row) since it's this component's own state, not rebuilt from a torn-down DOM every time.
   const [openKeys, setOpenKeys] = useState(() => new Set());
+  // Multi-select for bulk recategorizing: transaction ids ticked in any group's table.
+  const [selected, setSelectedIds] = useState(() => new Set());
+  const [bulkCategory, setBulkCategory] = useState('');
+
+  function setSelected(ids, on) {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      ids.forEach(id => (on ? next.add(id) : next.delete(id)));
+      return next;
+    });
+  }
 
   function toggleKey(key, isOpen) {
     setOpenKeys(prev => {
@@ -145,6 +174,18 @@ export function TransactionsCard() {
     return b[1].reduce((s, i) => s + i.amount, 0) - a[1].reduce((s, i) => s + i.amount, 0);
   });
 
+  // Only rows still shown count as selected — changing a filter never applies a bulk edit to rows
+  // the user can no longer see.
+  const shownIds = new Set(rows.map(r => r.id));
+  const selectedShown = [...selected].filter(id => shownIds.has(id));
+  const selection = { selected: new Set(selectedShown), setSelected };
+
+  function applyBulk() {
+    recategorizeTransactions(selectedShown, bulkCategory);
+    setSelectedIds(new Set());
+    setBulkCategory('');
+  }
+
   const monthCount = Math.max(visibleMonths().length, 1);
   const totalIncome = rows.filter(i => i.merchant === 'Lön (salary)').reduce((s, i) => s + i.amount, 0);
 
@@ -175,6 +216,18 @@ export function TransactionsCard() {
           {cardOptions.map(c => <option key={c} value={c}>{c}</option>)}
         </select>
       </div>
+      {selectedShown.length > 0 && (
+        <div class="bulk-bar" role="region" aria-label="Bulk recategorize">
+          <span><strong>{selectedShown.length}</strong> selected</span>
+          <select class="cat-select" value={bulkCategory} onChange={(e) => setBulkCategory(e.currentTarget.value)} aria-label="New category">
+            <option value="">Move to category…</option>
+            {leafCategories().map(c => <option key={c} value={c}>{c}</option>)}
+          </select>
+          <button class="primary btn-sm" disabled={!bulkCategory} onClick={applyBulk}>Apply</button>
+          <button class="btn-sm" onClick={() => setSelectedIds(new Set())}>Clear</button>
+          <span class="bulk-hint">Also moves other transactions from the same merchants.</span>
+        </div>
+      )}
       <div id="txn-table-wrap">
         {rows.length === 0 ? (
           <div style={{ margin: '10px 0', color: 'var(--text-dim)', fontSize: '13px' }}>No transactions in this range.</div>
@@ -194,6 +247,7 @@ export function TransactionsCard() {
                 openKeys={openKeys}
                 forceOpen={!!searchLower}
                 toggleKey={toggleKey}
+                selection={selection}
               />
             ))}
           </>
