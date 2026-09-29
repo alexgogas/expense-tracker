@@ -1,19 +1,13 @@
 // Port of index.html's loadAllData()/saveAllChanges()/buildAppSettings()/loadLegacyJSON(), updated
 // to read/write signals instead of bare globals.
 //
-// Now that the Overview slice exists, initOverviewState() (the state-reset portion of the old
-// renderOverview() — defaulting rangeFilter and resetting drillState) runs at the end of
-// loadAllData() below, same as the old app.
+// initOverviewState() (defaulting rangeFilter and resetting drillState) runs at the end of
+// loadAllData() below.
 //
-// Remaining known, intentional gap: the 4 one-time dataset-hygiene migrations
-// (removeSyntheticLoanEntries, migrateMortgageSubcategories, mergeHousingAssociationFeeMerchant,
-// migrateEarlyFixedTermRedemption) are still NOT called here. These aren't tied to any one card —
-// they're bank-import data hygiene the old app runs unconditionally on every load — and each
-// mutates real historical transactions/overrides/categoryTree in subtle, hand-tuned ways (e.g.
-// preferring whichever duplicate copy is already correctly categorized, Bankgiro-prefix matching).
-// Given that risk, porting them was deliberately kept out of this pass rather than folded silently
-// into the Overview diff; the old index.html stays fully deployed and keeps applying them, so nothing
-// that already relies on them today regresses. Worth a dedicated, carefully-tested pass of its own.
+// The original app also ran four one-time data-cleanup migrations on every load. They were
+// deliberately retired rather than ported: they only rewrote data from older formats, the original
+// app had already applied them to real data, and they matched on personal specifics that don't
+// belong in this public repo.
 //
 // CATEGORY_TREE/isValidParsedRow etc. below are bare references to categorization-engine.js's
 // globals (a classic, non-module <script>, loaded before this module runs — see vite.config.js's
@@ -196,9 +190,6 @@ export async function loadAllData() {
       }
     }
 
-    // TODO (future pass): removeSyntheticLoanEntries(), migrateMortgageSubcategories(),
-    // mergeHousingAssociationFeeMerchant(), migrateEarlyFixedTermRedemption() — see the file-level
-    // comment above.
     categoryTree.value = withBuiltInCategories(categoryTree.value);
     initOverviewState();
     unsavedChanges.value = false;

@@ -16,7 +16,7 @@ GitHub Pages builds and deploys `web/` via a GitHub Actions workflow (`.github/w
 
 ## Running / developing
 
-`cd web && npm install && npm run dev` for a dev server, `npm run build` to produce `web/dist`. There's no lint/test command.
+`cd web && npm install && npm run dev` for a dev server, `npm run build` to produce `web/dist`, `npm test` for the categorization-engine tests (`test/categorization-engine.test.js`, Node's built-in runner, no extra dependencies — fake data only). CI (`.github/workflows/ci.yml`) runs tests + build on every PR, and the deploy workflow runs them again before publishing. There's no lint command.
 
 Because Drive API calls (the OAuth flow, `web/src/drive.js`) require a live Google account, folder, and the app's own `CLIENT_ID`/`API_KEY` (hardcoded near the top of `web/src/state.js`), most UI flows can only be manually verified end-to-end while signed in with Drive access. The categorization engine (`categorization-engine.js`) has no such dependency and can be exercised standalone via Node (`node -e "..."` or a scratch script using `require('./categorization-engine.js')`).
 
@@ -52,7 +52,7 @@ The Drive folder ID is cached in `localStorage` (`FOLDER_STORAGE_KEY`) so re-sig
 
 Saving (`saveImport` in `import.js`) is a full read-modify-write: the in-memory `dataset`/`overrides` signals are updated, then the *entire* `canonical_dataset.json` and `canonical_overrides.json` contents are re-uploaded via `updateFileContent` (PATCH with `uploadType=media`). There's no partial update or diffing.
 
-**Known gap**: 4 one-time dataset-hygiene migrations from the original app (`removeSyntheticLoanEntries`, `migrateMortgageSubcategories`, `mergeHousingAssociationFeeMerchant`, `migrateEarlyFixedTermRedemption`) were never ported into `loadAllData()` — each mutates real historical transactions/overrides/categoryTree in subtle, hand-tuned ways and was deliberately left for its own dedicated, carefully-tested pass rather than folded into the migration. They're a no-op for any folder that's already been opened with a recent-enough version of the original app (which would have applied them already); a folder that hasn't may still carry old-format data these would have cleaned up.
+The original app also ran four one-time data-cleanup migrations on every load (old mortgage subcategories, placeholder loan entries, housing-fee merchant duplicates, an early fixed-term-deposit redemption). They were deliberately **retired, not ported**: they only rewrote older-format data, the original app had already applied them to the real data, and they matched on personal specifics that don't belong in this public repo. Their code is in the private archive repo if it's ever needed.
 
 ### Categorization pipeline (`categorization-engine.js`)
 

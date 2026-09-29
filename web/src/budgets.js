@@ -40,8 +40,6 @@ export function setBudget(path, rawValue, period) {
   else next[path] = period === 'year' ? amount / 12 : amount;
   budgets.value = next;
   markUnsaved();
-  // TODO (Spend chart slice): renderSpendChart() so the chart's Budget line reflects this
-  // immediately — no-op today since that chart doesn't exist in this app yet.
 }
 
 // Toggling the unit alone doesn't change the stored monthly-equivalent amount — only how it's
