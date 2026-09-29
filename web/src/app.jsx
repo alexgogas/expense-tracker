@@ -3,8 +3,8 @@ import {
   initAuth, requestSignIn, signOut, openFolderPicker,
   signedIn, userProfile, headerSub, hasStoredFolder, showNoFolderMsg
 } from './auth.js';
-import { saveAllChanges } from './persistence.js';
 import { unsavedChanges, pendingImport } from './state.js';
+import { SaveChangesButton } from './components/SaveChangesButton.jsx';
 import { busy, statusLine, view, panel, importOpen } from './lib/ui.js';
 import { Toasts } from './components/Toasts.jsx';
 import { Spinner } from './components/Spinner.jsx';
@@ -127,12 +127,11 @@ export function App() {
 
         {ready && busy.value?.kind !== 'load' && (
           <div id="app-content">
-            {unsavedChanges.value && (
+            {/* On the dashboard, Save lives in the Transactions card's header instead. */}
+            {unsavedChanges.value && view.value === 'settings' && (
               <div id="unsaved-changes-bar">
                 <span id="unsaved-changes-label">You have unsaved changes. Reload the page to discard them.</span>
-                <button class="primary btn-sm" onClick={saveAllChanges} disabled={saving}>
-                  {saving ? 'Saving…' : 'Save to Drive'}
-                </button>
+                <SaveChangesButton />
               </div>
             )}
             {view.value === 'settings' ? <SettingsView /> : (

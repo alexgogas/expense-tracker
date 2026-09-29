@@ -1,10 +1,11 @@
 import { useState } from 'preact/hooks';
-import { dataset, categoryTree, budgets } from '../state.js';
+import { dataset, categoryTree, budgets, unsavedChanges } from '../state.js';
 import { rangeFilteredDataset, visibleMonths } from '../lib/dataset.js';
 import { effectiveMonthlyBudget } from '../budgets.js';
 import { leafCategories } from '../categories.js';
 import { recategorizeTransaction } from '../transactions.js';
 import { SortableTable } from './SortableTable.jsx';
+import { SaveChangesButton } from './SaveChangesButton.jsx';
 
 // Port of index.html's groupMeta() — the summary line shown next to a collapsed category/
 // subcategory group.
@@ -149,7 +150,17 @@ export function TransactionsCard() {
 
   return (
     <details class="card">
-      <summary><h2>Transactions</h2></summary>
+      <summary>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', flexWrap: 'wrap' }}>
+          <h2 style={{ margin: 0 }}>Transactions</h2>
+          {unsavedChanges.value && (
+            <span style={{ display: 'flex', alignItems: 'center', gap: '10px', fontSize: '13px', color: 'var(--warn)' }}>
+              Unsaved changes
+              <SaveChangesButton />
+            </span>
+          )}
+        </div>
+      </summary>
       <div class="format-row">
         <input
           type="text" class="cat-select" placeholder="Search merchant… (across all categories)"
