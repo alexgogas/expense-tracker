@@ -253,10 +253,22 @@
 
   .budget-progress { margin-top: 18px; border-top: 1px solid var(--border); padding-top: 12px; }
   .budget-progress > summary { cursor: pointer; font-size: 13px; color: var(--text-dim); }
-  .progress-row { display: grid; grid-template-columns: minmax(120px, 1.2fr) minmax(80px, 2fr) 48px auto; align-items: center; gap: 10px; padding: 6px 0; font-size: 13px; border-bottom: 1px solid var(--border); }
+  /* One grid for every row (rows are subgrids), so bars start and end at the same x regardless of
+     how long each row's name or amount text is. */
+  .progress-list { display: grid; grid-template-columns: minmax(100px, max-content) minmax(80px, 1fr) max-content max-content; column-gap: 14px; }
+  .progress-row { grid-column: 1 / -1; display: grid; grid-template-columns: subgrid; align-items: center; row-gap: 4px; padding: 7px 0; font-size: 13px; border-bottom: 1px solid var(--border); }
   .progress-row:last-child { border-bottom: none; }
-  .progress-bar { width: 100%; }
-  @media (max-width: 600px) { .progress-row { grid-template-columns: 1fr 1fr 48px; } .progress-row .budget-actual { grid-column: 1 / -1; } }
+  .progress-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .progress-track { position: relative; height: 8px; background: var(--panel-2); border-radius: 4px; }
+  .progress-fill { display: block; height: 100%; border-radius: 4px; }
+  .progress-fill.clipped { border-radius: 4px 0 0 4px; -webkit-mask-image: linear-gradient(to right, #000 85%, transparent); mask-image: linear-gradient(to right, #000 85%, transparent); }
+  .progress-limit { position: absolute; top: -3px; bottom: -3px; width: 2px; margin-left: -1px; background: var(--text-dim); border-radius: 1px; }
+  .progress-pct { font-size: 12px; text-align: right; font-variant-numeric: tabular-nums; }
+  .progress-row .budget-actual { text-align: right; font-variant-numeric: tabular-nums; }
+  @media (max-width: 600px) {
+    .progress-list { grid-template-columns: minmax(80px, max-content) minmax(60px, 1fr) max-content; }
+    .progress-row .budget-actual { grid-column: 1 / -1; text-align: left; }
+  }
 
   #busy-pill {
     position: fixed; top: calc(var(--header-h, 0px) + 12px); left: 50%; transform: translateX(-50%); z-index: 26;
