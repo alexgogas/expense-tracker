@@ -37,16 +37,16 @@ export function budgetSummary() {
   return { rows, monthCount, totalBudget, totalActual };
 }
 
-// 6-step gradient rather than a plain under/over binary: green (comfortably under) through
-// yellow, orange, and light red as it approaches 100%, then a muted dark red just over budget,
-// escalating to a bright red only once meaningfully over.
+// Warms steadily as spend approaches the budget — green (comfortably under), yellow, orange, light
+// red just under 100% — then red once over, darkest when far over. Monotonic, so a redder bar always
+// means a larger share of the budget spent.
 export function budgetColorForPct(pct) {
   if (pct < 50) return '#7ee8b8';
   if (pct < 75) return '#ffcb6b';
   if (pct < 90) return '#ffb454';
   if (pct < 100) return '#ff8a80';
-  if (pct < 125) return '#b33939';
-  return '#ff6b6b';
+  if (pct < 125) return '#ff6b6b';
+  return '#e53935';
 }
 
 // rawValue is in whatever unit `period` denotes ('year' or 'month'); budgets[path] always stores
