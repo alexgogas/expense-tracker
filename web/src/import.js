@@ -1,10 +1,9 @@
 // Port of index.html's Import card business logic (file parsing, dedup, staging, save) — updated
 // to read/write signals instead of bare globals. `processImport` below is a bare reference to
 // categorization-engine.js's global (see persistence.js's file-level comment on why that file
-// stays a classic, non-module <script>). Unlike the old app, xlsx (SheetJS) is an npm dependency
-// here, not a CDN global.
+// stays a classic, non-module <script>). xlsx (SheetJS) is an npm dependency loaded on demand in
+// parseXlsx() — it's the app's largest dependency and only needed for .xlsx imports.
 
-import * as XLSX from 'xlsx';
 import {
   dataset, aliases, overrides, learnedLookup, sparkontoReferences, selectedFormat, pendingImport,
   fileIds, accountBalances, NET_WORTH_ACCOUNT, categorizationRules, categoryRoles
@@ -33,7 +32,7 @@ export function extractMonthEndBalances(rows) {
   return result;
 }
 
-function normalizeDate(val) {
+function normalizeDate(val, XLSX) {
   // handles Excel serial dates or date strings -> YYYY-MM-DD
   if (typeof val === 'number') {
     const d = XLSX.SSF.parse_date_code(val);
@@ -41,9 +40,9 @@ function normalizeDate(val) {
   }
   return String(val).slice(0, 10);
 }
-function normalizeAmexDate(val) {
+function normalizeAmexDate(val, XLSX) {
   // MM/DD/YYYY -> YYYY-MM-DD
-  if (typeof val === 'number') return normalizeDate(val);
+  if (typeof val === 'number') return normalizeDate(val, XLSX);
   const parts = String(val).split('/');
   if (parts.length === 3) {
     return `${parts[2]}-${parts[0].padStart(2, '0')}-${parts[1].padStart(2, '0')}`;
@@ -51,43 +50,33 @@ function normalizeAmexDate(val) {
   return String(val);
 }
 
-export function parseXlsx(file, format) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      try {
-        const wb = XLSX.read(e.target.result, { type: 'array', cellDates: false });
-        if (format === 'eurobonus') {
-          const sheet = wb.Sheets['Transaktioner'] || wb.Sheets[wb.SheetNames[0]];
-          const rows = XLSX.utils.sheet_to_json(sheet, { header: ['Datum', 'Bokfort', 'Specifikation', 'Ort', 'Valuta', 'Utl_belopp', 'Belopp'], range: 3, raw: true });
-          const clean = rows
-            .filter(r => r.Datum && typeof r.Belopp === 'number')
-            .map(r => ({
-              Datum: normalizeDate(r.Datum),
-              Specifikation: String(r.Specifikation || '').trim(),
-              Belopp: r.Belopp
-            }));
-          resolve(clean);
-        } else if (format === 'amex') {
-          const sheet = wb.Sheets['Transaktionsspecifikationer'] || wb.Sheets[wb.SheetNames[0]];
-          const rows = XLSX.utils.sheet_to_json(sheet, { header: ['Datum', 'Beskrivning', 'Belopp', 'Utokade', 'Kontoutdrag', 'Adress', 'Ort', 'Postnr', 'Land', 'Referens'], range: 6, raw: true });
-          const clean = rows
-            .filter(r => r.Datum && r.Datum !== 'Datum' && r.Beskrivning)
-            .map(r => ({
-              Datum: normalizeAmexDate(r.Datum),
-              Beskrivning: String(r.Beskrivning).trim(),
-              Belopp: parseFloat(r.Belopp)
-            }))
-            .filter(r => !isNaN(r.Belopp));
-          resolve(clean);
-        } else {
-          reject(new Error('Unknown xlsx format'));
-        }
-      } catch (err) { reject(err); }
-    };
-    reader.onerror = reject;
-    reader.readAsArrayBuffer(file);
-  });
+export async function parseXlsx(file, format) {
+  const XLSX = await import('xlsx');
+  const wb = XLSX.read(await file.arrayBuffer(), { type: 'array', cellDates: false });
+  if (format === 'eurobonus') {
+    const sheet = wb.Sheets['Transaktioner'] || wb.Sheets[wb.SheetNames[0]];
+    const rows = XLSX.utils.sheet_to_json(sheet, { header: ['Datum', 'Bokfort', 'Specifikation', 'Ort', 'Valuta', 'Utl_belopp', 'Belopp'], range: 3, raw: true });
+    return rows
+      .filter(r => r.Datum && typeof r.Belopp === 'number')
+      .map(r => ({
+        Datum: normalizeDate(r.Datum, XLSX),
+        Specifikation: String(r.Specifikation || '').trim(),
+        Belopp: r.Belopp
+      }));
+  }
+  if (format === 'amex') {
+    const sheet = wb.Sheets['Transaktionsspecifikationer'] || wb.Sheets[wb.SheetNames[0]];
+    const rows = XLSX.utils.sheet_to_json(sheet, { header: ['Datum', 'Beskrivning', 'Belopp', 'Utokade', 'Kontoutdrag', 'Adress', 'Ort', 'Postnr', 'Land', 'Referens'], range: 6, raw: true });
+    return rows
+      .filter(r => r.Datum && r.Datum !== 'Datum' && r.Beskrivning)
+      .map(r => ({
+        Datum: normalizeAmexDate(r.Datum, XLSX),
+        Beskrivning: String(r.Beskrivning).trim(),
+        Belopp: parseFloat(r.Belopp)
+      }))
+      .filter(r => !isNaN(r.Belopp));
+  }
+  throw new Error('Unknown xlsx format');
 }
 
 export function parsePersonkontoCSV(file) {
