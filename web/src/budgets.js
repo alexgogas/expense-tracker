@@ -3,8 +3,9 @@
 // place), per the plan's signal reference-equality note, since this file is the densest
 // concentration of that pattern anywhere in the app.
 
-import { budgets, budgetPeriods } from './state.js';
+import { budgets, budgetPeriods, categoryTree } from './state.js';
 import { markUnsaved } from './persistence.js';
+import { visibleMonths, actualSpendForPath } from './lib/dataset.js';
 
 // A category's own monthly budget if set; otherwise, if it has subcategories, the sum of
 // whichever of THEIR budgets are set (the "trace up" rollup) — or null if neither exists.
@@ -16,6 +17,24 @@ export function effectiveMonthlyBudget(entry) {
     return subSum > 0 ? subSum : null;
   }
   return null;
+}
+
+// Budget vs actual per top-level category over the selected date range (rangeFilter): the monthly
+// budget is prorated to the number of months in range. Shared by the dashboard's budget progress
+// and the Budgets settings tab. Excluded is left out (budgets track spend, not transfers).
+export function budgetSummary() {
+  const monthCount = Math.max(visibleMonths().length, 1);
+  let totalBudget = 0;
+  let totalActual = 0;
+  const rows = categoryTree.value.filter(entry => entry.key !== EXCLUDED).map(entry => {
+    const monthlyBudget = effectiveMonthlyBudget(entry);
+    const rangeBudget = monthlyBudget ? monthlyBudget * monthCount : null;
+    const actual = actualSpendForPath(entry.key, true);
+    if (rangeBudget) totalBudget += rangeBudget;
+    totalActual += actual;
+    return { entry, rangeBudget, actual, isRolledUp: !budgets.value[entry.key] && !!rangeBudget };
+  });
+  return { rows, monthCount, totalBudget, totalActual };
 }
 
 // 6-step gradient rather than a plain under/over binary: green (comfortably under) through

@@ -1,22 +1,56 @@
 import { useEffect } from 'preact/hooks';
 import {
-  initAuth, requestSignIn, signOut, openFolderPicker, openFileAccessPicker,
+  initAuth, requestSignIn, signOut, openFolderPicker,
   signedIn, userProfile, headerSub, hasStoredFolder, showNoFolderMsg
 } from './auth.js';
 import { saveAllChanges } from './persistence.js';
-import { unsavedChanges } from './state.js';
-import { busy, statusLine } from './lib/ui.js';
+import { unsavedChanges, pendingImport } from './state.js';
+import { busy, statusLine, view, panel, importOpen } from './lib/ui.js';
 import { Toasts } from './components/Toasts.jsx';
 import { Spinner } from './components/Spinner.jsx';
+import { Modal, SidePanel } from './components/Overlay.jsx';
+import { UploadIcon, NotesIcon, SparkIcon, GearIcon } from './components/Icons.jsx';
 import { OverviewCard } from './components/OverviewCard.jsx';
-import { NotesCard } from './components/NotesCard.jsx';
-import { TransactionsCard } from './components/TransactionsCard.jsx';
-import { BudgetsCard } from './components/BudgetsCard.jsx';
 import { SavingsCard } from './components/SavingsCard.jsx';
 import { NetWorthCard } from './components/NetWorthCard.jsx';
-import { InsightsCard } from './components/InsightsCard.jsx';
-import { CategoriesCard } from './components/CategoriesCard.jsx';
-import { ImportCard } from './components/ImportCard.jsx';
+import { TransactionsCard } from './components/TransactionsCard.jsx';
+import { SettingsView } from './components/SettingsView.jsx';
+import { ImportPanel } from './components/ImportPanel.jsx';
+import { NotesPanel } from './components/NotesPanel.jsx';
+import { InsightsPanel } from './components/InsightsPanel.jsx';
+
+const PANELS = {
+  notes: { title: 'Notes', Content: NotesPanel },
+  insights: { title: 'AI Insights', Content: InsightsPanel },
+};
+
+function togglePanel(name) {
+  panel.value = panel.value === name ? null : name;
+}
+
+// Icon buttons in the header once a Drive folder is connected: Import (modal), Notes and AI
+// Insights (side panel), Settings (a separate view instead of the dashboard).
+function Toolbar() {
+  return (
+    <>
+      <button class="icon-btn" onClick={() => { importOpen.value = true; }} aria-label="Import transactions" title="Import transactions">
+        <UploadIcon />
+        {pendingImport.value && <span class="icon-badge" aria-label="An import is waiting to be saved" />}
+      </button>
+      <button class={'icon-btn' + (panel.value === 'notes' ? ' active' : '')} onClick={() => togglePanel('notes')} aria-label="Notes" title="Notes" aria-pressed={panel.value === 'notes'}>
+        <NotesIcon />
+      </button>
+      <button class={'icon-btn' + (panel.value === 'insights' ? ' active' : '')} onClick={() => togglePanel('insights')} aria-label="AI Insights" title="AI Insights" aria-pressed={panel.value === 'insights'}>
+        <SparkIcon />
+      </button>
+      <button class={'icon-btn' + (view.value === 'settings' ? ' active' : '')}
+        onClick={() => { view.value = view.value === 'settings' ? 'dashboard' : 'settings'; }}
+        aria-label="Settings" title="Settings" aria-pressed={view.value === 'settings'}>
+        <GearIcon />
+      </button>
+    </>
+  );
+}
 
 export function App() {
   useEffect(() => {
@@ -31,6 +65,22 @@ export function App() {
     return () => window.removeEventListener('beforeunload', onBeforeUnload);
   }, []);
 
+  // The sticky header's height (it wraps on narrow screens) as --header-h, so side panels and the
+  // saving indicator sit just below it and the toolbar stays reachable while a panel is open.
+  useEffect(() => {
+    const header = document.querySelector('header');
+    const observer = new ResizeObserver(() => document.documentElement.style.setProperty('--header-h', header.offsetHeight + 'px'));
+    observer.observe(header);
+    return () => observer.disconnect();
+  }, []);
+
+  // Switching between the dashboard and Settings starts the new view at the top.
+  useEffect(() => { window.scrollTo(0, 0); }, [view.value]);
+
+  const ready = signedIn.value && hasStoredFolder.value;
+  const openPanel = ready && panel.value && PANELS[panel.value];
+  const saving = busy.value?.kind === 'save';
+
   return (
     <>
       <header>
@@ -39,24 +89,20 @@ export function App() {
           <div class="sub">{headerSub.value}</div>
         </div>
         <div id="signin-area">
+          {ready && <Toolbar />}
           {userProfile.value && (
             <div id="user-chip" style={{ display: 'flex' }}>
               <img id="user-avatar" src={userProfile.value.picture} alt="" />
               <span id="user-name">{userProfile.value.name}</span>
             </div>
           )}
-          {signedIn.value && (
-            <button onClick={openFolderPicker}>{hasStoredFolder.value ? 'Change Drive folder' : 'Connect Drive folder'}</button>
-          )}
-          {signedIn.value && hasStoredFolder.value && (
-            <button onClick={openFileAccessPicker} title='Grants this app write access to the 4 data files themselves — needed once, since selecting a folder only grants read access to its contents.'>Grant file access</button>
-          )}
+          {signedIn.value && !hasStoredFolder.value && <button onClick={openFolderPicker}>Connect Drive folder</button>}
           {!signedIn.value && <button class="primary" onClick={requestSignIn}>Sign in with Google</button>}
           {signedIn.value && <button onClick={signOut}>Sign out</button>}
         </div>
       </header>
 
-      <main>
+      <main class={openPanel ? 'with-panel' : ''}>
         {!signedIn.value && (
           <div id="signed-out-msg">
             <h2>Sign in to load your data</h2>
@@ -72,41 +118,46 @@ export function App() {
           </div>
         )}
 
-        {signedIn.value && hasStoredFolder.value && busy.value?.kind === 'load' && (
+        {ready && busy.value?.kind === 'load' && (
           <div id="loading-panel" role="status">
             <Spinner large />
             <div>{statusLine.value || 'Loading your data…'}</div>
           </div>
         )}
 
-        {signedIn.value && hasStoredFolder.value && busy.value?.kind !== 'load' && (
+        {ready && busy.value?.kind !== 'load' && (
           <div id="app-content">
             {unsavedChanges.value && (
               <div id="unsaved-changes-bar">
                 <span id="unsaved-changes-label">You have unsaved changes. Reload the page to discard them.</span>
-                <button class="primary btn-sm" onClick={saveAllChanges} disabled={busy.value?.kind === 'save'}>
-                  {busy.value?.kind === 'save' ? 'Saving…' : 'Save to Drive'}
+                <button class="primary btn-sm" onClick={saveAllChanges} disabled={saving}>
+                  {saving ? 'Saving…' : 'Save to Drive'}
                 </button>
               </div>
             )}
-            <OverviewCard />
-            <NotesCard />
-            <TransactionsCard />
-            <BudgetsCard />
-            <SavingsCard />
-            <NetWorthCard />
-            <InsightsCard />
-            <CategoriesCard />
-            <ImportCard />
-            {/* Every card is now migrated — order matches the old app's own Overview/Notes/
-                Transactions/Budgets/Savings/Net Worth/AI Insights/Categories/Import layout. */}
+            {view.value === 'settings' ? <SettingsView /> : (
+              <>
+                <OverviewCard />
+                <SavingsCard />
+                <NetWorthCard />
+                <TransactionsCard />
+              </>
+            )}
           </div>
         )}
       </main>
 
-      {busy.value?.kind === 'save' && (
-        <div id="busy-pill" role="status"><Spinner /> {busy.value.message}</div>
+      {openPanel && (
+        <SidePanel title={openPanel.title} onClose={() => { panel.value = null; }}>
+          <openPanel.Content />
+        </SidePanel>
       )}
+      {ready && importOpen.value && (
+        <Modal title="Import transactions" onClose={() => { importOpen.value = false; }} locked={saving || busy.value?.kind === 'import'}>
+          <ImportPanel />
+        </Modal>
+      )}
+      {saving && <div id="busy-pill" role="status"><Spinner /> {busy.value.message}</div>}
       <Toasts />
     </>
   );

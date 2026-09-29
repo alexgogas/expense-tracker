@@ -5,12 +5,12 @@ import { dataset, accountBalances, categoryTree, categoryRoles, mortgageModel, i
 import { effectiveMonthlyBudget } from '../budgets.js';
 import { colorForIndex, legendDoubleClickHandler, slidingWindowTrend, downloadChartPNG } from '../lib/charts.js';
 import { todayMonthLabel, monthSortKey, monthsElapsed, nextMonthLabel } from '../lib/months.js';
+import { view, settingsTab } from '../lib/ui.js';
 import {
-  netOfIncomeTax, netWorthMonths, netWorthSelectableMonths, futureAmortizationSelectableMonths,
-  quarterKeyForMonth, quarterKeyToLabel, effectiveInterestRateForMonth, sortedAmortizationSchedule,
+  netOfIncomeTax, netWorthMonths, netWorthSelectableMonths,
+  effectiveInterestRateForMonth, sortedAmortizationSchedule,
   effectiveAmortizationRateForMonth, computeFlowBucketBalances,
-  setMortgageField, setQuarterlyInterestRate, setAmortizationScheduleEntry,
-  setIskYtdPct, setIncomeField, setBenefitTierField, setNetWorthRangeFrom, setNetWorthRangeTo
+  setNetWorthRangeFrom, setNetWorthRangeTo
 } from '../networth.js';
 
 // Port of index.html's renderNetWorthChart(), split into a pure data/options builder called from
@@ -329,118 +329,6 @@ function buildNetWorthChartOptions() {
   };
 }
 
-function MortgageModelDetails() {
-  const m = mortgageModel.value;
-  const todayQKey = quarterKeyForMonth(todayMonthLabel());
-  const amortMonthOptions = futureAmortizationSelectableMonths();
-
-  return (
-    <details id="mortgage-model-details" style={{ marginTop: '10px' }}>
-      <summary style={{ cursor: 'pointer', fontSize: '13px', color: 'var(--text-dim)' }}>
-        Mortgage rate/amortization model (drives the "mortgage rate/amortization model" projection line)
-      </summary>
-      <p style={{ color: 'var(--text-dim)', fontSize: '12px', margin: '8px 0 10px' }}>
-        Simulates the loan balance forward month by month to replace just the Housing/Mortgage
-        slice of the budget in that one projection line — every other category still uses its
-        budget as set in the Budgets card above. Interest is charged on the shrinking outstanding
-        balance below, but amortization is computed against the original loan amount instead
-        (same as how banks peg it to your loan size at origination or your last LTV
-        reassessment, not to whatever's left today) — update that figure yourself if a
-        reassessment changes it. Neither figure is synced from your transactions; update the
-        outstanding balance yourself periodically to keep the projection accurate.
-      </p>
-      <div class="mortgage-model-row">
-        <label>Outstanding loan balance (kr) <input type="number" class="budget-input" style={{ width: '110px' }} placeholder="e.g. 3000000"
-          value={m.loanBalance || ''} onChange={(e) => setMortgageField('loanBalance', parseFloat(e.currentTarget.value) || 0)} /></label>
-        <label>Original loan amount (kr) <input type="number" class="budget-input" style={{ width: '110px' }} placeholder="e.g. 3500000"
-          value={m.originalLoanAmount || ''} onChange={(e) => setMortgageField('originalLoanAmount', parseFloat(e.currentTarget.value) || 0)} /></label>
-        <label>Current interest rate (%) <input type="number" class="budget-input" step="0.1" placeholder="e.g. 2"
-          value={m.currentInterestRate ?? ''} onChange={(e) => setMortgageField('currentInterestRate', parseFloat(e.currentTarget.value) || 0)} /></label>
-        <label>Current amortization rate (%) <input type="number" class="budget-input" step="0.1" placeholder="e.g. 2"
-          value={m.currentAmortizationRate ?? ''} onChange={(e) => setMortgageField('currentAmortizationRate', parseFloat(e.currentTarget.value) || 0)} /></label>
-      </div>
-      <div class="mortgage-model-row">
-        {[1, 2, 3, 4].map(i => (
-          <label key={i}>
-            <span>{quarterKeyToLabel(todayQKey + i)}</span> rate (%)
-            <input
-              type="number" class="budget-input" step="0.1" placeholder="same as previous"
-              value={m.quarterlyInterestRates[i - 1] ?? ''}
-              onChange={(e) => {
-                const v = e.currentTarget.value === '' ? null : parseFloat(e.currentTarget.value);
-                setQuarterlyInterestRate(i - 1, (v === null || isNaN(v)) ? null : v);
-              }}
-            />
-          </label>
-        ))}
-      </div>
-      <div class="mortgage-model-row">
-        {[1, 2, 3, 4].map(i => {
-          const entry = m.amortizationSchedule[i - 1];
-          return (
-            <label key={i}>
-              Amortization change {i}
-              <select class="cat-select" value={entry.month || ''} onChange={(e) => setAmortizationScheduleEntry(i - 1, 'month', e.currentTarget.value || null)}>
-                <option value="">(unset)</option>
-                {amortMonthOptions.map(mo => <option key={mo} value={mo}>{mo}</option>)}
-              </select>
-              <input
-                type="number" class="budget-input" step="0.1" placeholder="new %"
-                value={entry.rate ?? ''}
-                onChange={(e) => {
-                  const v = e.currentTarget.value === '' ? null : parseFloat(e.currentTarget.value);
-                  setAmortizationScheduleEntry(i - 1, 'rate', (v === null || isNaN(v)) ? null : v);
-                }}
-              />
-            </label>
-          );
-        })}
-      </div>
-    </details>
-  );
-}
-
-function IncomeModelDetails() {
-  const im = incomeModel.value;
-  const selectable = netWorthSelectableMonths();
-
-  return (
-    <details id="income-model-details" style={{ marginTop: '10px' }}>
-      <summary style={{ cursor: 'pointer', fontSize: '13px', color: 'var(--text-dim)' }}>
-        Income projection assumptions (drives the "salary, then a-kassa step-down" projection line)
-      </summary>
-      <p style={{ color: 'var(--text-dim)', fontSize: '12px', margin: '8px 0 10px' }}>
-        Assumes a regular monthly salary through the month below, then the a-kassa/insurance
-        unemployment benefit step-down schedule after that.
-      </p>
-      <div class="mortgage-model-row">
-        <label>Regular salary ends
-          <select class="cat-select" value={im.regularSalaryCutoff} onChange={(e) => setIncomeField('regularSalaryCutoff', e.currentTarget.value)}>
-            {selectable.map(mo => <option key={mo} value={mo}>{mo}</option>)}
-          </select>
-        </label>
-        <label>Projected monthly salary (kr, net) <input type="number" class="budget-input" style={{ width: '110px' }} placeholder="e.g. 45000"
-          value={im.projectedMonthlySalary || ''} onChange={(e) => setIncomeField('projectedMonthlySalary', parseFloat(e.currentTarget.value) || 0)} /></label>
-      </div>
-      <div class="mortgage-model-row">
-        {[1, 2, 3].map(i => {
-          const tier = im.benefitTiers[i - 1];
-          return (
-            <label key={i}>
-              Tier {i}: through month
-              <input type="number" class="budget-input" style={{ width: '60px' }}
-                value={tier.throughMonth ?? ''} onChange={(e) => setBenefitTierField(i - 1, 'throughMonth', parseFloat(e.currentTarget.value) || 0)} />
-              gross kr/mo
-              <input type="number" class="budget-input" style={{ width: '90px' }}
-                value={tier.gross || ''} onChange={(e) => setBenefitTierField(i - 1, 'gross', parseFloat(e.currentTarget.value) || 0)} />
-            </label>
-          );
-        })}
-      </div>
-    </details>
-  );
-}
-
 export function NetWorthCard() {
   const canvasRef = useRef(null);
   const chartRef = useRef(null);
@@ -476,14 +364,10 @@ export function NetWorthCard() {
         </div>
       </summary>
       <p style={{ color: 'var(--text-dim)', fontSize: '13px', margin: '0 0 14px' }}>
-        Sparkonto balance, ISK/external-savings/fixed-term-deposit holdings, mortgage cost, and
-        salary are all computed automatically from your imported Personkonto/Sparkonto
-        transactions — nothing to enter by hand. The projection assumes a regular salary through
-        the month set below, then the a-kassa/insurance unemployment benefit step-down schedule,
-        out to however far the "To" selector below reaches. The ISK pot itself is only ever
-        tracked from net deposits/withdrawals, which doesn't capture actual investment
-        performance — enter your broker's reported year-to-date % change below to correct it to
-        today's real value (applied from the start of the current calendar year onward).
+        Balances, holdings, mortgage cost, and salary come straight from your imported
+        transactions. Projections run out to the "To" month; their assumptions (income, mortgage,
+        ISK performance) are in{' '}
+        <button class="link-btn" onClick={() => { settingsTab.value = 'projections'; view.value = 'settings'; }}>Settings → Projections</button>.
       </p>
       <div id="networth-range-filter-row">
         <label>From
@@ -496,11 +380,7 @@ export function NetWorthCard() {
             {selectable.map(m => <option key={m} value={m}>{m}</option>)}
           </select>
         </label>
-        <label>ISK YTD % change <input type="number" class="budget-input" step="0.1" placeholder="e.g. 8.5"
-          value={iskYtdPct.value || ''} onChange={(e) => setIskYtdPct(parseFloat(e.currentTarget.value) || 0)} /></label>
       </div>
-      <MortgageModelDetails />
-      <IncomeModelDetails />
       <div style={{ position: 'relative', height: '340px', marginTop: '14px' }}>
         <canvas ref={canvasRef} />
       </div>
