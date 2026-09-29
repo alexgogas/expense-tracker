@@ -5,14 +5,13 @@ import {
 } from '../categories.js';
 import { RulesEditor } from './RulesEditor.jsx';
 
-// Port of index.html's renderCategoriesUI() — no manual re-render calls needed for the other
-// cards that read categoryTree/budgets/dataset/overrides/learnedLookup (Budgets, Net Worth):
-// they're already signal-reactive components and pick up every mutation here automatically.
-export function CategoriesCard() {
+// Settings tab: the category tree and the auto-categorization rules. Every card reading
+// categoryTree/budgets/dataset/overrides/learnedLookup is signal-reactive, so edits here show up
+// everywhere without manual re-renders.
+export function CategoriesSettings() {
   return (
-    <details class="card">
-      <summary><h2>Categories</h2></summary>
-      <p style={{ color: 'var(--text-dim)', fontSize: '13px', margin: '0 0 14px' }}>
+    <>
+      <p class="panel-hint">
         Renaming or merging a category updates every transaction, budget, and categorization rule
         using it. A category can't be deleted while transactions or rules still use it. "Excluded"
         and "Other › Uncategorized" are built in and can't be renamed or removed.
@@ -58,6 +57,6 @@ export function CategoriesCard() {
         <button class="btn-sm" onClick={addCategory}>+ Add category</button>
       </div>
       <RulesEditor />
-    </details>
+    </>
   );
 }

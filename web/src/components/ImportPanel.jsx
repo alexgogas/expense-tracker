@@ -1,6 +1,6 @@
 import { useRef, useState } from 'preact/hooks';
-import { selectedFormat, pendingImport, sparkontoReferences } from '../state.js';
-import { handleFile, saveImport, setSparkontoReference } from '../import.js';
+import { selectedFormat, pendingImport } from '../state.js';
+import { handleFile, saveImport } from '../import.js';
 import { leafCategories } from '../categories.js';
 import { busy } from '../lib/ui.js';
 import { Spinner } from './Spinner.jsx';
@@ -80,34 +80,9 @@ function ImportResults({ pending, choices, setChoices }) {
   );
 }
 
-function SparkontoReferencesDetails() {
-  const refs = sparkontoReferences.value;
-  return (
-    <details id="sparkonto-references-details" style={{ marginTop: '14px' }}>
-      <summary style={{ cursor: 'pointer', fontSize: '13px', color: 'var(--text-dim)' }}>
-        Private bank reference numbers (drives pot tracking and housing-fee recognition)
-      </summary>
-      <p style={{ color: 'var(--text-dim)', fontSize: '12px', margin: '8px 0 10px' }}>
-        Real reference numbers from your own transactions, stored only in your Drive settings —
-        used to recognize internal transfers to your ISK, an external savings account, or your
-        linked Personkonto (so the Net Worth chart can track those pots automatically), and your
-        housing association's Bankgiro payments. Leave a field blank to skip that rule.
-      </p>
-      <div class="mortgage-model-row">
-        <label>ISK transfer reference <input type="text" class="budget-input" style={{ width: '140px' }} placeholder="e.g. 1234 56 78901"
-          value={refs.isk} onChange={(e) => setSparkontoReference('isk', e.currentTarget.value)} /></label>
-        <label>External savings reference <input type="text" class="budget-input" style={{ width: '140px' }} placeholder="e.g. 2345 67 89012"
-          value={refs.externalSavings} onChange={(e) => setSparkontoReference('externalSavings', e.currentTarget.value)} /></label>
-        <label>Personkonto↔Sparkonto link reference <input type="text" class="budget-input" style={{ width: '140px' }} placeholder="e.g. 3456 78 90123"
-          value={refs.personkontoLink} onChange={(e) => setSparkontoReference('personkontoLink', e.currentTarget.value)} /></label>
-        <label>Housing association Bankgiro <input type="text" class="budget-input" style={{ width: '140px' }} placeholder="e.g. 123-4567"
-          value={refs.housingFeeBankgiro} onChange={(e) => setSparkontoReference('housingFeeBankgiro', e.currentTarget.value)} /></label>
-      </div>
-    </details>
-  );
-}
-
-export function ImportCard() {
+// Import modal content (see app.jsx). The staged import lives in the pendingImport signal, so
+// closing and reopening the modal keeps it.
+export function ImportPanel() {
   const fileInputRef = useRef(null);
   const [dragOver, setDragOver] = useState(false);
   // Mirrors the old app's drop-zone label/accept: both start generic and only narrow once the
@@ -125,8 +100,7 @@ export function ImportCard() {
   }
 
   return (
-    <details class="card" open>
-      <summary><h2>Import new transactions</h2></summary>
+    <>
       <div class="format-row">
         {FORMATS.map(f => (
           <div
@@ -167,7 +141,6 @@ export function ImportCard() {
       <div id="import-results">
         {pendingImport.value && <ImportResults pending={pendingImport.value} choices={choices} setChoices={setChoices} />}
       </div>
-      <SparkontoReferencesDetails />
-    </details>
+    </>
   );
 }

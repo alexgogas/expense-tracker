@@ -1,13 +1,13 @@
 import { notes } from '../state.js';
 import { markUnsaved } from '../persistence.js';
 
-export function NotesCard() {
+// Side-panel content (see app.jsx). Notes sync to Drive with the rest of the settings.
+export function NotesPanel() {
   return (
-    <details class="card">
-      <summary><h2>Notes</h2></summary>
-      <p style={{ color: 'var(--text-dim)', fontSize: '13px', margin: '0 0 14px' }}>
-        Free-form notes, synced to the same Drive folder as everything else — jot down
-        anything about your finances here and it'll be there next time you sign in, on any device.
+    <>
+      <p class="panel-hint">
+        Free-form notes, saved to your Drive folder with everything else — they'll be here next time
+        you sign in, on any device.
       </p>
       <textarea
         id="notes-textarea"
@@ -18,6 +18,6 @@ export function NotesCard() {
           markUnsaved();
         }}
       />
-    </details>
+    </>
   );
 }

@@ -8,6 +8,7 @@ import { statusLine } from '../lib/ui.js';
 import { subcategoryListWithOther, rowsForSubcategoryBucket, merchantSummaryRows, drillDown, drillBack, setRangeFrom, setRangeTo } from '../overview.js';
 import { SortableTable } from './SortableTable.jsx';
 import { Stat } from './Stat.jsx';
+import { BudgetProgress } from './BudgetProgress.jsx';
 
 // Port of index.html's renderSpendChart(), split into pure data/options builders called from a
 // useSignalEffect below (see SavingsCard.jsx's comment on useSignalEffect vs useEffect).
@@ -251,6 +252,7 @@ export function OverviewCard() {
       <div id="merchant-summary-wrap">
         <MerchantSummary rows={rows} />
       </div>
+      <BudgetProgress />
     </details>
   );
 }
