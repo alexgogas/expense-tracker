@@ -88,10 +88,17 @@ export const selectedFormat = signal('eurobonus');
 export const pendingImport = signal(null); // { results, unmatched, format }
 export const drillState = signal({ level: 'top', category: null }); // 'top' | 'sub' | 'merchant'
 export const rangeFilter = signal({ from: null, to: null });
-// Net Worth chart's own independent range (unlike rangeFilter above): defaults to 2 years back
-// through 3 months from today, computed once at load — the "To" end is what pulls the projection
-// forward into future months. Matches index.html's renderOverview()-time initialization, just
-// computed eagerly here since there's no equivalent one-time "after first load" hook yet.
-export const netWorthRangeFilter = signal({ from: addMonthsToLabel(todayMonthLabel(), -24), to: addMonthsToLabel(todayMonthLabel(), 3) });
+// Default visible period when data loads: charts look back DEFAULT_HISTORY_MONTHS, and the Net
+// Worth chart also projects DEFAULT_PROJECTION_MONTHS ahead. Applied by initOverviewState() on
+// every load; the user can widen either range with the From/To pickers.
+export const DEFAULT_HISTORY_MONTHS = 12;
+export const DEFAULT_PROJECTION_MONTHS = 3;
+export function defaultNetWorthRange() {
+  const today = todayMonthLabel();
+  return { from: addMonthsToLabel(today, -DEFAULT_HISTORY_MONTHS), to: addMonthsToLabel(today, DEFAULT_PROJECTION_MONTHS) };
+}
+// Net Worth chart's own independent range (unlike rangeFilter above) — its "To" end is what pulls
+// the projection forward into future months.
+export const netWorthRangeFilter = signal(defaultNetWorthRange());
 export const unsavedChanges = signal(false);
 export const insightsConversation = signal([]);

@@ -20,7 +20,7 @@ import {
   DEFAULT_BANK_REFERENCES, categorizationRules, categoryRoles
 } from './state.js';
 import { downloadFile, updateFileContent, createFileInFolder, listFilesInFolder } from './drive.js';
-import { setStatus, showToast } from './lib/ui.js';
+import { setStatus, showToast, busy } from './lib/ui.js';
 import { todayMonthLabel } from './lib/months.js';
 import { initOverviewState } from './overview.js';
 
@@ -99,6 +99,7 @@ export async function loadAllData() {
     setStatus('No Drive folder connected yet.');
     return;
   }
+  busy.value = { kind: 'load' };
   try {
     setStatus('Listing files…');
     const files = await listFilesInFolder(folderId.value);
@@ -213,12 +214,15 @@ export async function loadAllData() {
       showToast('Error loading data: ' + err.message, 'error');
     }
     console.error(err);
+  } finally {
+    busy.value = null;
   }
 }
 
 export async function saveAllChanges() {
-  if (!unsavedChanges.value) return;
+  if (!unsavedChanges.value || busy.value) return;
   setStatus('Saving changes to Drive…');
+  busy.value = { kind: 'save', message: 'Saving changes to Drive…' };
   try {
     await updateFileContent(fileIds.value['canonical_dataset.json'], JSON.stringify(dataset.value));
     await updateFileContent(fileIds.value['canonical_overrides.json'], JSON.stringify(overrides.value, null, 2));
@@ -246,5 +250,7 @@ export async function saveAllChanges() {
     }
     showToast('Save failed: ' + err.message + hint, 'error');
     console.error(err);
+  } finally {
+    busy.value = null;
   }
 }

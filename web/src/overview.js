@@ -3,9 +3,9 @@
 // drillState/rangeFilter mutation setters, and the one-time state reset the old app did inside
 // renderOverview() at the end of every loadAllData() call.
 
-import { categoryTree, rangeFilter, drillState } from './state.js';
+import { categoryTree, rangeFilter, drillState, netWorthRangeFilter, DEFAULT_HISTORY_MONTHS, defaultNetWorthRange } from './state.js';
 import { sortedMonthList } from './lib/dataset.js';
-import { monthSortKey } from './lib/months.js';
+import { monthSortKey, todayMonthLabel, addMonthsToLabel } from './lib/months.js';
 
 export function categoryHasSubs(topCategory) {
   const entry = categoryTree.value.find(c => c.key === topCategory);
@@ -66,16 +66,21 @@ export function setRangeTo(to) {
   rangeFilter.value = { from, to };
 }
 
-// The state-reset portion of index.html's renderOverview() — called once at the end of
-// loadAllData() (see persistence.js), same as the old app. Defaults the Overview/Savings/
-// Transactions range to Jan-25 onward (falling back to the earliest available month if there's no
-// data that far back yet) and resets drillState to the top level. Only sets the INITIAL From
-// selector — the dropdown still lets the user pick any earlier month afterward.
+// Called once at the end of every loadAllData() (see persistence.js). Resets both ranges to the
+// default period and drillState to the top level:
+// - Overview/Savings/Transactions (rangeFilter, which only offers months that have data): from the
+//   first data month on or after the same month last year, through the latest data month. If all
+//   data is older than that, the most recent DEFAULT_HISTORY_MONTHS of data instead.
+// - Net Worth: the same year back, plus the projection months ahead (defaultNetWorthRange()).
+// Only the initial selection — the pickers still reach any other month afterward.
 export function initOverviewState() {
   const months = sortedMonthList();
   const lastMonth = months[months.length - 1] || null;
-  const defaultFrom = (months.includes('Jan-25') && lastMonth && monthSortKey('Jan-25') <= monthSortKey(lastMonth))
-    ? 'Jan-25' : (months[0] || null);
-  rangeFilter.value = { from: defaultFrom, to: lastMonth };
+  const since = addMonthsToLabel(todayMonthLabel(), -DEFAULT_HISTORY_MONTHS);
+  const from = months.find(m => monthSortKey(m) >= monthSortKey(since))
+    || months[Math.max(0, months.length - 1 - DEFAULT_HISTORY_MONTHS)]
+    || null;
+  rangeFilter.value = { from, to: lastMonth };
+  netWorthRangeFilter.value = defaultNetWorthRange();
   drillState.value = { level: 'top', category: null };
 }

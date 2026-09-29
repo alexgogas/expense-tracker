@@ -9,7 +9,7 @@ import {
   fileIds, accountBalances, NET_WORTH_ACCOUNT, categorizationRules, categoryRoles
 } from './state.js';
 import { updateFileContent, createFileInFolder } from './drive.js';
-import { setStatus, showToast } from './lib/ui.js';
+import { setStatus, showToast, busy } from './lib/ui.js';
 import { monthLabel } from './lib/months.js';
 import { markUnsaved } from './persistence.js';
 
@@ -123,7 +123,9 @@ export async function handleFile(file) {
     showToast('Sign in and let data finish loading first.', 'error');
     return;
   }
+  if (busy.value) return;
   setStatus('Reading file…');
+  busy.value = { kind: 'import', message: 'Reading file…' };
   try {
     const format = selectedFormat.value;
     let rawRows;
@@ -180,6 +182,8 @@ export async function handleFile(file) {
     setStatus('');
     showToast('Import failed: ' + err.message, 'error');
     console.error(err);
+  } finally {
+    busy.value = null;
   }
 }
 
@@ -193,7 +197,7 @@ export function setSparkontoReference(field, rawValue) {
 // out of the DOM at save time.
 export async function saveImport(choices) {
   const pending = pendingImport.value;
-  if (!pending) return;
+  if (!pending || busy.value) return;
   setStatus('Saving to Drive…');
 
   // Apply any manual category picks for unmatched rows. The old app relied on `unmatched[idx]`
@@ -249,6 +253,7 @@ export async function saveImport(choices) {
   // Drive actually has (no stale dataset, no risk of double-writing these rows on retry).
   const balanceUpdates = pending.balanceUpdates; // captured before pendingImport is cleared below
   let transactionsSaved = false;
+  busy.value = { kind: 'save', message: 'Saving import to Drive…' };
   try {
     await updateFileContent(fileIds.value['canonical_dataset.json'], JSON.stringify(nextDataset));
     transactionsSaved = true;
@@ -300,5 +305,7 @@ export async function saveImport(choices) {
       showToast('Save failed: ' + err.message + hint, 'error');
     }
     console.error(err);
+  } finally {
+    busy.value = null;
   }
 }

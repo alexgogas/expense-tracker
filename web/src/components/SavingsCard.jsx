@@ -1,4 +1,4 @@
-import { useRef } from 'preact/hooks';
+import { useEffect, useRef } from 'preact/hooks';
 import { useSignalEffect } from '@preact/signals';
 import Chart from 'chart.js/auto';
 import { visibleBuckets, bucketOf, bucketLabel, rangeFilteredDataset, isDailyMode } from '../lib/dataset.js';
@@ -76,6 +76,7 @@ function buildSavingsChartOptions() {
 export function SavingsCard() {
   const canvasRef = useRef(null);
   const chartRef = useRef(null);
+  useEffect(() => () => chartRef.current?.destroy(), []);
 
   useSignalEffect(() => {
     const chartData = buildSavingsChartData();
