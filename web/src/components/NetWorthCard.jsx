@@ -1,4 +1,4 @@
-import { useRef } from 'preact/hooks';
+import { useEffect, useRef } from 'preact/hooks';
 import { useSignalEffect } from '@preact/signals';
 import Chart from 'chart.js/auto';
 import { dataset, accountBalances, categoryTree, categoryRoles, mortgageModel, incomeModel, iskYtdPct, netWorthRangeFilter, NET_WORTH_ACCOUNT } from '../state.js';
@@ -444,6 +444,7 @@ function IncomeModelDetails() {
 export function NetWorthCard() {
   const canvasRef = useRef(null);
   const chartRef = useRef(null);
+  useEffect(() => () => chartRef.current?.destroy(), []);
   const selectable = netWorthSelectableMonths();
 
   useSignalEffect(() => {

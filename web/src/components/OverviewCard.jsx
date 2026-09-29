@@ -1,4 +1,4 @@
-import { useRef } from 'preact/hooks';
+import { useEffect, useRef } from 'preact/hooks';
 import { useSignalEffect } from '@preact/signals';
 import Chart from 'chart.js/auto';
 import { rangeFilter, drillState } from '../state.js';
@@ -189,6 +189,7 @@ function MerchantSummary({ rows }) {
 export function OverviewCard() {
   const canvasRef = useRef(null);
   const chartRef = useRef(null);
+  useEffect(() => () => chartRef.current?.destroy(), []);
 
   useSignalEffect(() => {
     const chartData = buildSpendChartData();

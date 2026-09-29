@@ -5,7 +5,9 @@ import {
 } from './auth.js';
 import { saveAllChanges } from './persistence.js';
 import { unsavedChanges } from './state.js';
+import { busy, statusLine } from './lib/ui.js';
 import { Toasts } from './components/Toasts.jsx';
+import { Spinner } from './components/Spinner.jsx';
 import { OverviewCard } from './components/OverviewCard.jsx';
 import { NotesCard } from './components/NotesCard.jsx';
 import { TransactionsCard } from './components/TransactionsCard.jsx';
@@ -70,12 +72,21 @@ export function App() {
           </div>
         )}
 
-        {signedIn.value && hasStoredFolder.value && (
+        {signedIn.value && hasStoredFolder.value && busy.value?.kind === 'load' && (
+          <div id="loading-panel" role="status">
+            <Spinner large />
+            <div>{statusLine.value || 'Loading your data…'}</div>
+          </div>
+        )}
+
+        {signedIn.value && hasStoredFolder.value && busy.value?.kind !== 'load' && (
           <div id="app-content">
             {unsavedChanges.value && (
               <div id="unsaved-changes-bar">
                 <span id="unsaved-changes-label">You have unsaved changes. Reload the page to discard them.</span>
-                <button class="primary btn-sm" onClick={saveAllChanges}>Save to Drive</button>
+                <button class="primary btn-sm" onClick={saveAllChanges} disabled={busy.value?.kind === 'save'}>
+                  {busy.value?.kind === 'save' ? 'Saving…' : 'Save to Drive'}
+                </button>
               </div>
             )}
             <OverviewCard />
@@ -93,6 +104,9 @@ export function App() {
         )}
       </main>
 
+      {busy.value?.kind === 'save' && (
+        <div id="busy-pill" role="status"><Spinner /> {busy.value.message}</div>
+      )}
       <Toasts />
     </>
   );

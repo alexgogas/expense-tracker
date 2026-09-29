@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'preact/hooks';
 import { insightsConversation, ANTHROPIC_API_KEY_STORAGE_KEY } from '../state.js';
 import { startInsightsConversation, sendInsightsChatMessage } from '../insights.js';
+import { Spinner } from './Spinner.jsx';
 
 // Port of index.html's AI Insights card. The API key input, "include merchant detail" checkbox,
 // chat-input text, and status line are all local component state (ephemeral UI, not shared with
@@ -44,7 +45,7 @@ export function InsightsCard() {
         Include individual transaction detail (merchant names/amounts) for richer insights
       </label>
       <button class="btn-sm" onClick={() => startInsightsConversation(apiKeyInput, includeMerchants, setStatus)}>Generate insights</button>
-      <div style={{ marginTop: '10px', fontSize: '13px', color: 'var(--text-dim)' }}>{status}</div>
+      <div style={{ marginTop: '10px', fontSize: '13px', color: 'var(--text-dim)' }} role="status">{status && <><Spinner /> {status}</>}</div>
       <div style={{ marginTop: '10px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
         {insightsConversation.value.map((msg, i) => (
           <div key={i} style={{ whiteSpace: 'pre-wrap', fontSize: '14px', lineHeight: '1.5', color: msg.role === 'user' ? 'var(--text-dim)' : undefined }}>

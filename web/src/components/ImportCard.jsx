@@ -2,6 +2,8 @@ import { useRef, useState } from 'preact/hooks';
 import { selectedFormat, pendingImport, sparkontoReferences } from '../state.js';
 import { handleFile, saveImport, setSparkontoReference } from '../import.js';
 import { leafCategories } from '../categories.js';
+import { busy } from '../lib/ui.js';
+import { Spinner } from './Spinner.jsx';
 
 const FORMATS = [
   { key: 'eurobonus', label: 'SAS EuroBonus (.xlsx)', ext: '.xlsx' },
@@ -58,8 +60,10 @@ function ImportResults({ pending, choices, setChoices }) {
             </div>
           )}
           <div style={{ marginTop: '16px', display: 'flex', gap: '10px' }}>
-            <button class="primary" onClick={() => saveImport(choices)}>Save to Drive</button>
-            <button onClick={() => { pendingImport.value = null; }}>Discard</button>
+            <button class="primary" onClick={() => saveImport(choices)} disabled={!!busy.value}>
+              {busy.value?.kind === 'save' ? <><Spinner /> Saving…</> : 'Save to Drive'}
+            </button>
+            <button onClick={() => { pendingImport.value = null; }} disabled={busy.value?.kind === 'save'}>Discard</button>
           </div>
         </>
       ) : (
@@ -156,7 +160,9 @@ export function ImportCard() {
             e.currentTarget.value = '';
           }}
         />
-        <div>{dropLabel}</div>
+        {busy.value?.kind === 'import'
+          ? <div role="status"><Spinner /> {busy.value.message}</div>
+          : <div>{dropLabel}</div>}
       </div>
       <div id="import-results">
         {pendingImport.value && <ImportResults pending={pendingImport.value} choices={choices} setChoices={setChoices} />}
