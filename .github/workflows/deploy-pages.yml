@@ -31,6 +31,10 @@ jobs:
       - name: Install dependencies
         working-directory: web
         run: npm ci
+      # A failing test blocks the deploy, so a broken engine never reaches the live site.
+      - name: Test
+        working-directory: web
+        run: npm test
       - name: Build
         working-directory: web
         run: npm run build

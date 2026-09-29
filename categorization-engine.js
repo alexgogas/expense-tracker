@@ -10,10 +10,8 @@ const CATEGORY_TREE = [
   // Interest and Amortization used to be separate subs, but Sparkonto's per-tranche mortgage
   // rollover (see parseSparkontoRows) can't cleanly split between them, so both are tracked as
   // one combined "Amortization/interest" sub instead, sourced only from real Sparkonto rollover
-  // transactions — migrateMortgageSubcategories() (from the original single-file app, not yet
-  // ported to web/ — see CLAUDE.md's "known gap") moved existing data on the old subs over. Avgift
-  // is the recurring Personkonto Bankgiro fee (see parsePersonkontoRows) — a real transaction,
-  // unlike the old placeholder loan entries removeSyntheticLoanEntries() removed (same status).
+  // transactions (existing data on the old subs was migrated by the original app). Avgift is the
+  // recurring Personkonto Bankgiro fee (see parsePersonkontoRows).
   { key: "Housing/Mortgage", subs: ["Amortization/interest", "Avgift", "Utilities"] },
   { key: "Transportation", subs: null },
   { key: "Flights & Travel Booking", subs: null },
